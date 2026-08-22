@@ -28,7 +28,7 @@ If a macOS security warning prevents the installer from opening, Control-click
 
 ## Launch through Spotlight
 
-Press Command-Space, type **DJ Meta Search**, and press Return. Starting without
+Press Command-Space, type **DJMetaSearch**, and press Return. Starting without
 a selected file is supported; the window opens with an empty search field.
 
 DJPoolRecords may show its normal login or browser challenge the first time.

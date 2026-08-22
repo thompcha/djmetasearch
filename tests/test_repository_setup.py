@@ -9,7 +9,7 @@ def test_required_user_facing_scripts_exist_and_are_executable() -> None:
         ROOT / "install.command",
         ROOT / "update.command",
         ROOT / "automator_search_from_tags.zsh",
-        ROOT / "scripts" / "DJ Meta Search.command",
+        ROOT / "scripts" / "DJMetaSearch.command",
         ROOT / "scripts" / "Update DJ Meta Search.command",
     ]
     for path in paths:
@@ -22,7 +22,7 @@ def test_portable_scripts_do_not_contain_developer_home_path() -> None:
         ROOT / "install.command",
         ROOT / "update.command",
         ROOT / "automator_search_from_tags.zsh",
-        ROOT / "scripts" / "DJ Meta Search.command",
+        ROOT / "scripts" / "DJMetaSearch.command",
         ROOT / "scripts" / "Update DJ Meta Search.command",
     ]
     for path in paths:
@@ -31,7 +31,7 @@ def test_portable_scripts_do_not_contain_developer_home_path() -> None:
 
 
 def test_launcher_and_automator_invocations_match_cli_contract() -> None:
-    launcher = (ROOT / "scripts" / "DJ Meta Search.command").read_text(encoding="utf-8")
+    launcher = (ROOT / "scripts" / "DJMetaSearch.command").read_text(encoding="utf-8")
     automator = (ROOT / "automator_search_from_tags.zsh").read_text(encoding="utf-8")
     assert '"$PYTHON" "$SEARCH_SCRIPT"' in launcher
     assert '"$PYTHON" "$SEARCH_SCRIPT" --print-query "$1"' in automator

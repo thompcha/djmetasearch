@@ -85,14 +85,17 @@ print "Installing the private Chromium browser..."
 "$VENV_PYTHON" -m playwright install chromium || fail "The Chromium browser could not be installed. Check the internet connection and try again."
 
 mkdir -p "$APPLICATIONS_DIR"
-cp "$REPO_DIR/scripts/DJ Meta Search.command" "$APPLICATIONS_DIR/DJ Meta Search.command"
+cp "$REPO_DIR/scripts/DJMetaSearch.command" "$APPLICATIONS_DIR/DJMetaSearch.command"
 cp "$REPO_DIR/scripts/Update DJ Meta Search.command" "$APPLICATIONS_DIR/Update DJ Meta Search.command"
-chmod 755 "$APPLICATIONS_DIR/DJ Meta Search.command" "$APPLICATIONS_DIR/Update DJ Meta Search.command"
+chmod 755 "$APPLICATIONS_DIR/DJMetaSearch.command" "$APPLICATIONS_DIR/Update DJ Meta Search.command"
+if [[ -f "$APPLICATIONS_DIR/DJ Meta Search.command" ]]; then
+  rm "$APPLICATIONS_DIR/DJ Meta Search.command"
+fi
 
 print "Installed Spotlight launchers in $APPLICATIONS_DIR"
 print "Installation completed successfully."
 trap - ZERR
 
 if [[ "${DJMETASEARCH_NO_SUCCESS_DIALOG:-0}" != "1" ]]; then
-  show_dialog "$APP_NAME is ready" "Open Spotlight and type “DJ Meta Search” to launch it. Use “Update DJ Meta Search” when you want updates."
+  show_dialog "$APP_NAME is ready" "Open Spotlight and type “DJMetaSearch” to launch it. Use “Update DJ Meta Search” when you want updates."
 fi
