@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+.venv/
+.DS_Store
+.pytest_cache/
+.coverage
+htmlcov/
+*.log
+
+# Local authenticated/runtime state. Never commit these.
+djpool_state.json
+bootstrap_cache.json
+runtime/
+
+# Local task notes; not part of the distributable project.
+DJMETASEARCH_CODEX_HANDOFF.md

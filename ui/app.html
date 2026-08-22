@@ -1,0 +1,867 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>DJ MetaSearch</title>
+  <style>
+    :root {
+      --bg: #10131a;
+      --panel: #181d26;
+      --panel-hover: #202733;
+      --border: #2c3442;
+      --text: #f1f3f6;
+      --muted: #aab3c0;
+      --accent: #7b347f;
+      --accent-hover: #924397;
+      --danger: #f28b82;
+      --shadow: 0 16px 44px rgb(0 0 0 / 28%);
+      --preview-height: 0px;
+    }
+
+    * { box-sizing: border-box; }
+    html, body { min-height: 100%; }
+    body {
+      margin: 0;
+      background: radial-gradient(circle at 50% -10%, #28213a 0, var(--bg) 38rem);
+      color: var(--text);
+      font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    button, input { font: inherit; }
+    button, a { -webkit-tap-highlight-color: transparent; }
+
+    .app {
+      width: min(1180px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 28px 0 calc(28px + var(--preview-height));
+      transition: padding-bottom .18s ease;
+    }
+
+    .masthead {
+      display: flex;
+      align-items: end;
+      justify-content: space-between;
+      gap: 24px;
+      margin-bottom: 18px;
+    }
+
+    h1 { margin: 0; font-size: clamp(22px, 3vw, 32px); letter-spacing: -.025em; }
+    .eyebrow { margin: 0 0 3px; color: #cda8cf; font-size: 12px; font-weight: 750; letter-spacing: .12em; text-transform: uppercase; }
+    .count { color: var(--muted); font-weight: 650; white-space: nowrap; }
+
+    .search-shell {
+      padding: 14px;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: var(--panel);
+      box-shadow: var(--shadow);
+      position: sticky;
+      top: 12px;
+      z-index: 20;
+    }
+    .search-shell::before {
+      content: "";
+      position: absolute;
+      left: -1px;
+      right: -1px;
+      bottom: 100%;
+      height: 13px;
+      background: var(--bg);
+      pointer-events: none;
+    }
+
+    .search-row { display: flex; gap: 10px; }
+    #query {
+      min-width: 0;
+      flex: 1;
+      height: 44px;
+      padding: 0 14px;
+      border: 1px solid var(--border);
+      border-radius: 9px;
+      outline: 0;
+      background: #0f1319;
+      color: var(--text);
+    }
+    #query:focus { border-color: #a65bad; box-shadow: 0 0 0 3px rgb(166 91 173 / 18%); }
+    #query::placeholder { color: #778190; }
+
+    .primary, .variant, .action {
+      border: 1px solid transparent;
+      border-radius: 8px;
+      cursor: pointer;
+      color: #fff;
+      font-weight: 700;
+      text-decoration: none;
+      transition: background .15s ease, border-color .15s ease, transform .08s ease;
+    }
+    .primary:active, .variant:active, .action:active { transform: translateY(1px); }
+    .primary { min-width: 92px; padding: 0 18px; background: var(--accent); }
+    .primary:hover { background: var(--accent-hover); }
+    .primary:disabled { cursor: wait; opacity: .65; }
+
+    .variants { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 10px; }
+    .variant { padding: 6px 11px; border-color: #3a4352; background: #222936; font-size: 13px; }
+    .variant:hover { background: #2b3442; border-color: #596477; }
+
+    .status {
+      position: fixed;
+      right: max(16px, calc((100vw - 1152px) / 2));
+      bottom: calc(16px + var(--preview-height));
+      z-index: 70;
+      max-width: min(520px, calc(100vw - 32px));
+      margin: 0;
+      padding: 9px 12px;
+      border: 1px solid var(--border);
+      border-radius: 9px;
+      background: rgb(24 29 38 / 96%);
+      color: var(--muted);
+      box-shadow: 0 10px 30px rgb(0 0 0 / 32%);
+      pointer-events: none;
+      opacity: 1;
+      visibility: visible;
+      transform: translateY(0);
+      transition: opacity .15s ease, transform .15s ease, visibility 0s, bottom .18s ease;
+    }
+    .status:empty {
+      opacity: 0;
+      visibility: hidden;
+      transform: translateY(6px);
+      transition: opacity .15s ease, transform .15s ease, visibility 0s linear .15s, bottom .18s ease;
+    }
+    .status.error { border-color: rgb(242 139 130 / 45%); color: var(--danger); }
+
+    .results { display: grid; gap: 8px; margin-top: 8px; }
+    .result {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 18px;
+      min-height: 58px;
+      padding: 7px 14px;
+      border: 1px solid transparent;
+      border-radius: 10px;
+      background: rgb(24 29 38 / 84%);
+    }
+    .result:hover { border-color: var(--border); background: var(--panel-hover); }
+    .result.previewable { cursor: pointer; }
+    .result.previewable:focus-visible { border-color: #a65bad; outline: 3px solid rgb(166 91 173 / 18%); }
+    .result-name { overflow-wrap: anywhere; font-weight: 700; }
+    .result-details { display: flex; align-items: center; gap: 9px; min-width: 0; }
+    .provider {
+      display: inline-flex;
+      margin-top: 0;
+      padding: 2px 7px;
+      border: 1px solid #61416a;
+      border-radius: 999px;
+      color: #d7b4da;
+      font-size: 10px;
+      font-weight: 800;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+    }
+    .provider.rvremix { border-color: #81421f; color: #ffad7b; }
+    .result-trailing { display: flex; align-items: center; justify-content: flex-end; gap: 14px; }
+    .result-size { min-width: 48px; color: var(--muted); font-size: 13px; text-align: right; white-space: nowrap; }
+    .actions { display: flex; align-items: center; gap: 7px; }
+    .action { display: inline-flex; align-items: center; justify-content: center; min-width: 78px; height: 34px; padding: 0 12px; border-color: #404a5a; background: #252d39; font-size: 13px; }
+    .action:hover { background: #323c4b; }
+    .action.preview-action {
+      width: 34px;
+      min-width: 34px;
+      padding: 0;
+      border-radius: 50%;
+      opacity: 0;
+      pointer-events: none;
+      transform: translateX(5px);
+      transition: opacity .14s ease, transform .14s ease, background .14s ease;
+    }
+    .result.previewable:hover .preview-action,
+    .result.previewable:focus .preview-action,
+    .result.previewable:focus-within .preview-action {
+      opacity: 1;
+      pointer-events: auto;
+      transform: translateX(0);
+    }
+    .action.download { background: var(--accent); border-color: var(--accent); }
+    .action.download:hover { background: var(--accent-hover); }
+    .action[disabled] { cursor: not-allowed; opacity: .38; }
+
+    .empty {
+      padding: 62px 20px;
+      border: 1px dashed var(--border);
+      border-radius: 12px;
+      color: var(--muted);
+      text-align: center;
+    }
+
+    .player {
+      position: fixed;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      z-index: 50;
+      display: grid;
+      grid-template-columns: minmax(180px, 300px) minmax(260px, 1fr) auto;
+      align-items: center;
+      gap: 16px;
+      width: 100%;
+      min-height: 82px;
+      padding: 10px max(14px, calc((100vw - 1152px) / 2)) max(10px, env(safe-area-inset-bottom));
+      border-top: 1px solid var(--border);
+      background: rgb(16 19 26 / 96%);
+      box-shadow: 0 -12px 38px rgb(0 0 0 / 28%);
+      backdrop-filter: blur(16px);
+      transform: translateY(100%);
+      visibility: hidden;
+      transition: transform .18s ease, visibility 0s linear .18s;
+    }
+    .player.visible {
+      transform: translateY(0);
+      visibility: visible;
+      transition: transform .18s ease;
+    }
+    .player-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 700; }
+    .player-media { min-width: 0; line-height: 0; }
+    .preview-loading { color: var(--muted); font-size: 13px; font-weight: 650; line-height: 1.4; }
+    .player audio, .player video { display: block; width: 100%; max-height: 62px; }
+    .player[data-kind="video"] { min-height: min(260px, 36vh); }
+    .player[data-kind="video"] video { height: min(230px, calc(36vh - 30px)); max-height: none; background: #050608; object-fit: contain; }
+    .player-controls { display: flex; align-items: center; gap: 8px; }
+    .player-download[hidden] { display: none; }
+    .close-player { width: 34px; height: 34px; border: 1px solid var(--border); border-radius: 50%; background: var(--panel); color: #fff; cursor: pointer; }
+
+    @media (max-width: 700px) {
+      .app { width: min(100% - 20px, 1180px); padding-top: 18px; }
+      .masthead { align-items: start; }
+      .search-row { flex-direction: column; }
+      .primary { height: 42px; }
+      .result { gap: 10px; }
+      .result-trailing { gap: 8px; }
+      .result-size { min-width: 40px; }
+      .status { left: 10px; right: 10px; max-width: none; }
+      .player { grid-template-columns: 1fr auto; padding-inline: 12px; }
+      .player-media { grid-column: 1 / -1; grid-row: 2; }
+      .player[data-kind="video"] { min-height: min(300px, 44vh); }
+      .player[data-kind="video"] video { height: min(240px, calc(44vh - 60px)); }
+    }
+  </style>
+</head>
+<body>
+  <main class="app">
+    <header class="masthead">
+      <div>
+        <p class="eyebrow">DJPoolRecords + RVRemix</p>
+        <h1>DJ MetaSearch</h1>
+      </div>
+      <div id="count" class="count" aria-live="polite"></div>
+    </header>
+
+    <section class="search-shell" aria-label="Record search">
+      <form id="search-form" class="search-row">
+        <input id="query" name="query" type="search" autocomplete="off" spellcheck="false" placeholder="Artist - Title" aria-label="Search query">
+        <button id="search-button" class="primary" type="submit">Search</button>
+      </form>
+      <div class="variants" aria-label="Search variants">
+        <button class="variant" data-suffix="intro" type="button">Intro</button>
+        <button class="variant" data-suffix="clean" type="button">Clean</button>
+        <button class="variant" data-suffix="dirty" type="button">Dirty</button>
+        <button class="variant" data-suffix="trans" type="button">Trans</button>
+        <button class="variant" data-suffix="segue" type="button">Segue</button>
+        <button class="variant" data-suffix="QH" type="button">QH</button>
+        <button class="variant" data-suffix="SE" type="button">SE</button>
+        <button class="variant" data-suffix="short" type="button">Short</button>
+        <button id="clear-modifier" class="variant" type="button">Clear</button>
+      </div>
+    </section>
+
+    <div id="status" class="status" role="status" aria-live="polite">Starting secure session…</div>
+    <section id="results" class="results" aria-label="Search results">
+      <div class="empty">Enter an artist and title to search.</div>
+    </section>
+  </main>
+
+  <aside id="player" class="player" aria-label="Media preview">
+    <div id="player-title" class="player-title"></div>
+    <div id="player-media" class="player-media"></div>
+    <div class="player-controls">
+      <button id="player-download" class="action download player-download" type="button" hidden>Download</button>
+      <button id="close-player" class="close-player" type="button" aria-label="Close preview">×</button>
+    </div>
+  </aside>
+
+  <script>
+    (() => {
+      const state = {
+        template: null,
+        refreshing: false,
+        activeQuery: "",
+        searchGeneration: 0,
+        djpoolRequests: new Map(),
+        rvremixRequests: new Map(),
+        djpoolQueries: new Map(),
+        rvremixQueries: new Map(),
+        activeDJPoolKeys: [],
+        activeModifier: "",
+        activeDJPoolModel: null,
+        activeRVModel: null,
+        activeRVFinished: true,
+        activeDJPoolError: "",
+        activeRVError: "",
+        renderRevision: 0,
+        activePreviewRequest: null,
+        previewGeneration: 0,
+        previewFilename: "",
+        previewCanDownload: false
+      };
+      const queryInput = document.getElementById("query");
+      const form = document.getElementById("search-form");
+      const searchButton = document.getElementById("search-button");
+      const status = document.getElementById("status");
+      const count = document.getElementById("count");
+      const results = document.getElementById("results");
+      const player = document.getElementById("player");
+      const playerTitle = document.getElementById("player-title");
+      const playerMedia = document.getElementById("player-media");
+      const playerDownload = document.getElementById("player-download");
+      const previewObserver = new ResizeObserver(entries => {
+        const height = player.classList.contains("visible") ? entries[0].contentRect.height : 0;
+        document.documentElement.style.setProperty("--preview-height", `${Math.ceil(height)}px`);
+      });
+      previewObserver.observe(player);
+
+      function setStatus(message, isError = false) {
+        status.textContent = message || "";
+        status.classList.toggle("error", isError);
+      }
+
+      function setBusy(busy) {
+        searchButton.disabled = busy;
+        searchButton.textContent = busy ? "Searching…" : "Search";
+      }
+
+      const variantSuffixes = new Set(["intro", "clean", "dirty", "trans", "qh", "se", "segue", "short"]);
+
+      function stripApostrophes(query) {
+        return query.replace(/['\u2018\u2019\u02bc\uff07]/g, "");
+      }
+
+      function variantQuery(query, suffix) {
+        const clean = stripApostrophes(query).trim();
+        if (!clean) return suffix;
+        const words = clean.split(/\s+/);
+        const lastWord = words[words.length - 1].toLowerCase();
+        if (lastWord === suffix.toLowerCase()) return clean;
+        if (variantSuffixes.has(lastWord)) words.pop();
+        return [...words, suffix].join(" ");
+      }
+
+      function clearQueryModifier(query) {
+        const words = stripApostrophes(query).trim().split(/\s+/).filter(Boolean);
+        if (words.length && variantSuffixes.has(words[words.length - 1].toLowerCase())) words.pop();
+        return words.join(" ");
+      }
+
+      function queryKey(query) {
+        return stripApostrophes(query).trim().replace(/\s+/g, " ").toLowerCase();
+      }
+
+      function closePlayer() {
+        state.previewGeneration += 1;
+        state.activePreviewRequest = null;
+        playerMedia.replaceChildren();
+        player.classList.remove("visible");
+        player.removeAttribute("data-kind");
+        document.body.classList.remove("preview-open");
+        document.documentElement.style.setProperty("--preview-height", "0px");
+        playerTitle.textContent = "";
+        playerDownload.hidden = true;
+        playerDownload.disabled = false;
+        state.previewFilename = "";
+        state.previewCanDownload = false;
+      }
+
+      async function openPreview(item) {
+        closePlayer();
+        if (!item.preview_url || !["audio", "video"].includes(item.kind)) return;
+        const generation = state.previewGeneration;
+        const loading = document.createElement("div");
+        loading.className = "preview-loading";
+        loading.textContent = "Caching preview locally…";
+        playerTitle.textContent = item.name;
+        state.previewFilename = item.filename || item.name || "download.bin";
+        state.previewCanDownload = Boolean(item.download_url);
+        playerMedia.appendChild(loading);
+        player.dataset.kind = item.kind;
+        document.body.classList.add("preview-open");
+        player.classList.add("visible");
+        setStatus(`Caching “${item.name}” for preview…`);
+        try {
+          const requestId = await window.requestPreview(JSON.stringify({
+            id: item.id,
+            name: item.name,
+            kind: item.kind,
+            mime_type: item.mime_type || "",
+            url: item.preview_url
+          }));
+          if (generation !== state.previewGeneration) return;
+          state.activePreviewRequest = requestId;
+        } catch (error) {
+          if (generation !== state.previewGeneration) return;
+          loading.textContent = "Preview caching failed.";
+          setStatus(`Could not cache preview: ${error.message}`, true);
+        }
+      }
+
+      function makeAction(label, className) {
+        const element = document.createElement("a");
+        element.className = `action ${className || ""}`.trim();
+        element.textContent = label;
+        return element;
+      }
+
+      function render(model) {
+        results.replaceChildren();
+        const total = model.results.length;
+        const providerCounts = model.results.reduce((counts, item) => {
+          const provider = item.provider || "Unknown";
+          counts[provider] = (counts[provider] || 0) + 1;
+          return counts;
+        }, {});
+        const breakdown = ["DJPoolRecords", "RVRemix"]
+          .filter(provider => providerCounts[provider])
+          .map(provider => `${providerCounts[provider]} ${provider}`)
+          .join(" · ");
+        count.textContent = `${total.toLocaleString()} result${total === 1 ? "" : "s"}` +
+          (breakdown ? ` · ${breakdown}` : "");
+        if (!model.results.length) {
+          const empty = document.createElement("div");
+          empty.className = "empty";
+          empty.textContent = "No matching files were found.";
+          results.appendChild(empty);
+          return;
+        }
+
+        for (const item of model.results) {
+          const row = document.createElement("article");
+          row.className = "result";
+          const details = document.createElement("div");
+          details.className = "result-details";
+          const name = document.createElement("div");
+          name.className = "result-name";
+          name.textContent = item.name;
+          details.append(name);
+          const provider = document.createElement("span");
+          provider.className = `provider ${item.provider === "RVRemix" ? "rvremix" : "djpoolrecords"}`;
+          provider.textContent = item.provider || "Unknown";
+          details.append(provider);
+
+          const trailing = document.createElement("div");
+          trailing.className = "result-trailing";
+          const size = document.createElement("div");
+          size.className = "result-size";
+          size.textContent = item.size || "";
+          const actions = document.createElement("div");
+          actions.className = "actions";
+          const isPlayable = item.preview_url && ["audio", "video"].includes(item.kind);
+          if (isPlayable) {
+            row.classList.add("previewable");
+            row.tabIndex = 0;
+            row.setAttribute("role", "button");
+            row.setAttribute("aria-label", `Preview ${item.name}`);
+            const activatePreview = () => openPreview(item);
+            row.addEventListener("click", event => {
+              if (event.target.closest(".download")) return;
+              activatePreview();
+            });
+            row.addEventListener("keydown", event => {
+              if (event.target !== row || !["Enter", " "].includes(event.key)) return;
+              event.preventDefault();
+              activatePreview();
+            });
+            const preview = document.createElement("button");
+            preview.className = "action preview-action";
+            preview.type = "button";
+            preview.textContent = "▶";
+            preview.title = "Preview";
+            preview.setAttribute("aria-hidden", "true");
+            preview.tabIndex = -1;
+            actions.appendChild(preview);
+          }
+          actions.appendChild(size);
+          if (item.download_url) {
+            const download = item.provider === "RVRemix" ? document.createElement("button") : makeAction("Download", "download");
+            if (item.provider === "RVRemix") {
+              download.className = "action download";
+              download.type = "button";
+              download.textContent = "Download";
+              download.addEventListener("click", async event => {
+                event.preventDefault();
+                event.stopPropagation();
+                if (download.getAttribute("aria-disabled") === "true") return;
+                download.setAttribute("aria-disabled", "true");
+                setStatus(`Downloading ${item.filename} from RVRemix…`);
+                try {
+                  await window.requestRemoteDownload(JSON.stringify({
+                    id: item.id,
+                    filename: item.filename,
+                    mime_type: item.mime_type || "audio/mpeg",
+                    url: item.download_url
+                  }));
+                } catch (error) {
+                  download.removeAttribute("aria-disabled");
+                  setStatus(`Could not start RVRemix download: ${error.message}`, true);
+                }
+              });
+            } else {
+              download.href = item.download_url;
+              download.download = item.filename;
+              download.addEventListener("click", event => {
+                event.stopPropagation();
+                setStatus(`Downloading ${item.filename}…`);
+              });
+            }
+            actions.appendChild(download);
+          }
+          trailing.append(actions);
+          row.append(details, trailing);
+          results.appendChild(row);
+        }
+      }
+
+      async function requestRefresh(query, reason) {
+        if (state.refreshing) return;
+        state.refreshing = true;
+        setBusy(true);
+        setStatus(reason || "Refreshing the secure DJPoolRecords session…");
+        try {
+          await window.requestBootstrap(query);
+        } catch (error) {
+          state.refreshing = false;
+          setBusy(false);
+          setStatus(`Could not request session refresh: ${error.message}`, true);
+        }
+      }
+
+      async function fetchDJPoolModel(query) {
+        const key = queryKey(query);
+        if (state.djpoolQueries.has(key)) return state.djpoolQueries.get(key).promise;
+        const record = { key, model: null, done: false, promise: null };
+        state.djpoolQueries.set(key, record);
+        record.promise = (async () => {
+          const request = await window.requestDJPoolSearch(query);
+          // Tests and alternate hosts may return a model immediately.
+          if (request && typeof request === "object") {
+            record.model = request;
+            record.done = true;
+            return request;
+          }
+          return new Promise((resolve, reject) => {
+            state.djpoolRequests.set(String(request), { resolve, reject, record });
+          });
+        })();
+        record.promise.catch(() => state.djpoolQueries.delete(key));
+        return record.promise;
+      }
+
+      async function fetchRVRemixModel(query) {
+        const key = queryKey(query);
+        if (state.rvremixQueries.has(key)) return state.rvremixQueries.get(key);
+        const pending = (async () => {
+          const request = await window.requestRVRemixSearch(query);
+          // Tests and alternate hosts may return a model immediately.
+          if (request && typeof request === "object") return request;
+          return new Promise((resolve, reject) => {
+            state.rvremixRequests.set(String(request), { resolve, reject });
+          });
+        })();
+        state.rvremixQueries.set(key, pending);
+        pending.catch(() => state.rvremixQueries.delete(key));
+        return pending;
+      }
+
+      async function fetchProviderModel(fetcher, query, modifier, baseQuery) {
+        if (!modifier || !baseQuery) return fetcher(query);
+        const models = await Promise.all([fetcher(query), fetcher(baseQuery)]);
+        return window.mergeResultModels(JSON.stringify({ models, later_title_term: modifier }));
+      }
+
+      function activeDJPoolRecords() {
+        return state.activeDJPoolKeys
+          .map(key => state.djpoolQueries.get(key))
+          .filter(Boolean);
+      }
+
+      function activeDJPoolFinished() {
+        const records = activeDJPoolRecords();
+        return records.length === state.activeDJPoolKeys.length && records.every(record => record.done);
+      }
+
+      function updateActiveStatus(total) {
+        const djpoolFinished = activeDJPoolFinished();
+        if (state.activeDJPoolError) {
+          setStatus(state.activeDJPoolError, true);
+          return;
+        }
+        if (state.activeRVError) {
+          const prefix = djpoolFinished ? "" : "Loading more DJPoolRecords… ";
+          setStatus(`${prefix}RVRemix unavailable: ${state.activeRVError}`, true);
+          return;
+        }
+        if (!djpoolFinished && !state.activeRVFinished) {
+          setStatus("Loading more DJPoolRecords and RVRemix…");
+        } else if (!djpoolFinished) {
+          setStatus("Loading more DJPoolRecords…");
+        } else if (!state.activeRVFinished) {
+          setStatus(
+            state.activeDJPoolModel?.results?.length
+              ? "DJPoolRecords results ready; loading RVRemix…"
+              : "No DJPoolRecords matches; loading RVRemix…"
+          );
+        } else {
+          setStatus(total ? "" : `No matches for “${state.activeQuery}”.`);
+        }
+      }
+
+      async function renderActiveResults() {
+        const generation = state.searchGeneration;
+        const revision = ++state.renderRevision;
+        const models = [state.activeDJPoolModel, state.activeRVModel].filter(Boolean);
+        const model = models.length > 1
+          ? await window.mergeResultModels(JSON.stringify({ models, later_title_term: "" }))
+          : (models[0] || { count: 0, results: [] });
+        if (generation !== state.searchGeneration || revision !== state.renderRevision) return;
+        render(model);
+        updateActiveStatus(model.results.length);
+      }
+
+      async function rebuildActiveDJPool() {
+        const generation = state.searchGeneration;
+        const records = activeDJPoolRecords();
+        if (!records.length || records.some(record => !record.model)) return;
+        const models = records.map(record => record.model);
+        const model = models.length > 1
+          ? await window.mergeResultModels(JSON.stringify({
+              models,
+              later_title_term: state.activeModifier
+            }))
+          : models[0];
+        if (generation !== state.searchGeneration) return;
+        state.activeDJPoolModel = model;
+        await renderActiveResults();
+      }
+
+      async function runSearch(query, finalAttempt = false) {
+        const clean = stripApostrophes(query).trim();
+        const generation = ++state.searchGeneration;
+        state.activeQuery = clean;
+        queryInput.value = clean;
+        closePlayer();
+        if (!clean) {
+          setBusy(false);
+          setStatus("Enter a search query.", true);
+          queryInput.focus();
+          return;
+        }
+        if (!state.template) {
+          await requestRefresh(clean, "Preparing the secure search connection…");
+          return;
+        }
+
+        setBusy(true);
+        setStatus(`Searching for “${clean}”…`);
+        const words = clean.split(/\s+/);
+        const modifier = variantSuffixes.has(words[words.length - 1].toLowerCase())
+          ? words[words.length - 1].toLowerCase()
+          : "";
+        const baseQuery = modifier ? clearQueryModifier(clean) : "";
+        state.activeDJPoolKeys = (modifier && baseQuery ? [clean, baseQuery] : [clean]).map(queryKey);
+        state.activeModifier = modifier;
+        state.activeDJPoolModel = null;
+        state.activeRVModel = null;
+        state.activeRVFinished = false;
+        state.activeDJPoolError = "";
+        state.activeRVError = "";
+        if (modifier && baseQuery) setStatus(`Searching for “${clean}” and “${baseQuery}”…`);
+
+        // Start the slower provider immediately, but settle it so an early
+        // DJPoolRecords authentication refresh cannot cause an unhandled rejection.
+        const rvremixTask = fetchProviderModel(
+          fetchRVRemixModel, clean, modifier, baseQuery
+        ).then(model => ({ model }), error => ({ error }));
+
+        let djpoolModel;
+        try {
+          djpoolModel = await fetchProviderModel(fetchDJPoolModel, clean, modifier, baseQuery);
+        } catch (error) {
+          if (generation !== state.searchGeneration) return;
+          if (!finalAttempt) {
+            await requestRefresh(clean, "The saved connection expired. Refreshing it in the background…");
+            return;
+          }
+          const rvremix = await rvremixTask;
+          if (generation !== state.searchGeneration) return;
+          state.refreshing = false;
+          setBusy(false);
+          if (rvremix.model?.results?.length) {
+            render(rvremix.model);
+            setStatus(`DJPoolRecords unavailable; showing RVRemix results. ${error.message}`, true);
+          } else {
+            setStatus(`Search failed after refreshing the session: ${error.message}`, true);
+          }
+          return;
+        }
+
+        if (generation !== state.searchGeneration) return;
+        state.activeDJPoolModel = djpoolModel;
+        state.refreshing = false;
+        setBusy(false);
+        await renderActiveResults();
+
+        const rvremix = await rvremixTask;
+        if (generation !== state.searchGeneration) return;
+        state.activeRVFinished = true;
+        if (rvremix.error) {
+          state.activeRVError = rvremix.error.message || "search failed";
+          await renderActiveResults();
+          return;
+        }
+        state.activeRVModel = rvremix.model;
+        await renderActiveResults();
+      }
+
+      form.addEventListener("submit", event => {
+        event.preventDefault();
+        runSearch(queryInput.value, false);
+      });
+      document.querySelectorAll(".variant").forEach(button => {
+        if (!button.dataset.suffix) return;
+        button.addEventListener("click", () => runSearch(variantQuery(queryInput.value || state.activeQuery, button.dataset.suffix), false));
+      });
+      document.getElementById("clear-modifier").addEventListener("click", () => {
+        runSearch(clearQueryModifier(queryInput.value || state.activeQuery), false);
+      });
+      document.getElementById("close-player").addEventListener("click", closePlayer);
+      playerDownload.addEventListener("click", async event => {
+        event.preventDefault();
+        if (!state.activePreviewRequest || !state.previewCanDownload || playerDownload.disabled) return;
+        playerDownload.disabled = true;
+        setStatus(`Saving cached preview ${state.previewFilename}…`);
+        try {
+          await window.requestCachedDownload(JSON.stringify({
+            request_id: state.activePreviewRequest,
+            filename: state.previewFilename
+          }));
+        } catch (error) {
+          playerDownload.disabled = false;
+          setStatus(`Could not save cached preview: ${error.message}`, true);
+        }
+      });
+
+      window.djpool = {
+        start(template, initialQuery) {
+          state.template = template || null;
+          state.refreshing = false;
+          queryInput.value = initialQuery || "";
+          if (initialQuery) runSearch(initialQuery, false);
+          else if (template) {
+            setBusy(false);
+            setStatus("Ready.");
+            queryInput.focus();
+          } else requestRefresh("", "Preparing the secure search connection…");
+        },
+        bootstrapSucceeded(template, query) {
+          state.template = template;
+          state.djpoolQueries.clear();
+          state.refreshing = false;
+          if (query) runSearch(query, true);
+          else {
+            setBusy(false);
+            setStatus("Secure session ready.");
+            queryInput.focus();
+          }
+        },
+        bootstrapFailed(message) {
+          state.refreshing = false;
+          setBusy(false);
+          setStatus(message || "Could not establish an authenticated DJPoolRecords session.", true);
+        },
+        djpoolSearchSucceeded(requestId, model, done = false) {
+          const pending = state.djpoolRequests.get(String(requestId));
+          if (!pending) return;
+          pending.record.model = model;
+          pending.record.done = Boolean(done);
+          pending.resolve(model);
+        },
+        djpoolSearchUpdated(requestId, model, done = false) {
+          const pending = state.djpoolRequests.get(String(requestId));
+          if (!pending) return;
+          pending.record.model = model;
+          pending.record.done = Boolean(done);
+          rebuildActiveDJPool();
+        },
+        djpoolSearchFailed(requestId, message) {
+          const pending = state.djpoolRequests.get(String(requestId));
+          if (!pending) return;
+          state.djpoolRequests.delete(String(requestId));
+          pending.reject(new Error(message || "DJPoolRecords search failed."));
+        },
+        djpoolSearchPaginationFailed(requestId, message) {
+          const pending = state.djpoolRequests.get(String(requestId));
+          if (!pending) return;
+          pending.record.done = true;
+          if (state.activeDJPoolKeys.includes(pending.record.key)) {
+            state.activeDJPoolError = `Could not load more DJPoolRecords results: ${message}`;
+            renderActiveResults();
+          }
+        },
+        rvremixSearchSucceeded(requestId, model) {
+          const pending = state.rvremixRequests.get(String(requestId));
+          if (!pending) return;
+          state.rvremixRequests.delete(String(requestId));
+          pending.resolve(model);
+        },
+        rvremixSearchFailed(requestId, message) {
+          const pending = state.rvremixRequests.get(String(requestId));
+          if (!pending) return;
+          state.rvremixRequests.delete(String(requestId));
+          pending.reject(new Error(message || "RVRemix search failed."));
+        },
+        previewReady(requestId, localUrl, kind) {
+          if (requestId !== state.activePreviewRequest || !player.classList.contains("visible")) return;
+          const media = document.createElement(kind === "video" ? "video" : "audio");
+          media.controls = true;
+          media.controlsList.add("nodownload");
+          media.autoplay = true;
+          media.preload = "auto";
+          media.src = localUrl;
+          media.addEventListener("error", () => setStatus("The cached preview could not be played.", true), { once: true });
+          playerMedia.replaceChildren(media);
+          player.dataset.kind = kind;
+          playerDownload.hidden = !state.previewCanDownload;
+          setStatus("");
+        },
+        previewFailed(requestId, message) {
+          if (requestId !== state.activePreviewRequest || !player.classList.contains("visible")) return;
+          const failure = document.createElement("div");
+          failure.className = "preview-loading";
+          failure.textContent = "Preview unavailable.";
+          playerMedia.replaceChildren(failure);
+          setStatus(message || "Could not cache the preview.", true);
+        },
+        downloadFinished(message, warning) {
+          playerDownload.disabled = false;
+          document.querySelectorAll('.result .download[aria-disabled="true"]')
+            .forEach(button => button.removeAttribute("aria-disabled"));
+          window.clearTimeout(window.djpoolDownloadStatusTimer);
+          setStatus(message, Boolean(warning));
+          window.djpoolDownloadStatusTimer = window.setTimeout(() => {
+            if (status.textContent === message) setStatus("");
+          }, 5000);
+        }
+      };
+    })();
+  </script>
+</body>
+</html>
