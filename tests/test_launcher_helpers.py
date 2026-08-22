@@ -1,17 +1,56 @@
 from pathlib import Path
 
-from playwright.sync_api import sync_playwright
+import pytest
+from playwright.sync_api import Error as PlaywrightError, sync_playwright
 
 import standalone_app
 from standalone_app import (
     page_has_audio_module,
     page_is_logged_out,
+    evaluate_open_page,
     parse_byte_range,
     resolve_login_credentials,
     search_djpoolrecords,
     try_auto_login,
     unique_destination,
 )
+
+
+def test_evaluate_open_page_treats_window_closure_as_normal_exit() -> None:
+    class ClosedPage:
+        @staticmethod
+        def is_closed() -> bool:
+            return True
+
+        @staticmethod
+        def evaluate(_expression: str, _argument: object) -> None:
+            raise AssertionError("A closed page must not be evaluated")
+
+    class ClosingPage:
+        @staticmethod
+        def is_closed() -> bool:
+            return False
+
+        @staticmethod
+        def evaluate(_expression: str, _argument: object) -> None:
+            raise PlaywrightError("Target page, context or browser has been closed")
+
+    assert not evaluate_open_page(ClosedPage(), "ignored")
+    assert not evaluate_open_page(ClosingPage(), "ignored")
+
+
+def test_evaluate_open_page_does_not_hide_other_playwright_errors() -> None:
+    class BrokenPage:
+        @staticmethod
+        def is_closed() -> bool:
+            return False
+
+        @staticmethod
+        def evaluate(_expression: str, _argument: object) -> None:
+            raise PlaywrightError("JavaScript callback failed")
+
+    with pytest.raises(PlaywrightError, match="JavaScript callback failed"):
+        evaluate_open_page(BrokenPage(), "ignored")
 
 
 def test_unique_destination_preserves_name_and_adds_suffix(tmp_path: Path) -> None:

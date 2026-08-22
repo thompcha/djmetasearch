@@ -18,7 +18,7 @@ from pathlib import Path
 from urllib.parse import quote, urlencode, urlsplit
 
 try:
-    from playwright.sync_api import BrowserContext, Page, Route, sync_playwright
+    from playwright.sync_api import BrowserContext, Error as PlaywrightError, Page, Route, sync_playwright
 except ImportError as exc:  # pragma: no cover - exercised before dependencies exist
     print(f"Missing dependency: playwright ({exc})", file=sys.stderr)
     print("Install with: python -m pip install -r requirements.txt && python -m playwright install chromium", file=sys.stderr)
@@ -173,6 +173,19 @@ def page_has_audio_module(page: Page) -> bool:
         return page.locator(AUDIO_SELECTOR).count() > 0
     except Exception:
         return False
+
+
+def evaluate_open_page(page: Page, expression: str, argument: object = None) -> bool:
+    """Evaluate a UI callback, treating a concurrently closed window as normal exit."""
+    if page.is_closed():
+        return False
+    try:
+        page.evaluate(expression, argument)
+    except PlaywrightError as exc:
+        if page.is_closed() or "Target page, context or browser has been closed" in str(exc):
+            return False
+        raise
+    return True
 
 
 def page_is_logged_out(page: Page) -> bool:
@@ -643,7 +656,13 @@ def run() -> int:
             app_page.on("download", handle_download)
             app_page.goto(APP_URL, wait_until="load")
             djpool_template = load_cache(CACHE_PATH)
-            app_page.evaluate("([cache, query]) => window.djpool.start(cache, query)", [djpool_template, initial_query])
+            if not evaluate_open_page(
+                app_page,
+                "([cache, query]) => window.djpool.start(cache, query)",
+                [djpool_template, initial_query],
+            ):
+                browser.close()
+                return 0
 
             while not app_page.is_closed():
                 if pending_djpool_searches:
@@ -679,10 +698,12 @@ def run() -> int:
                             if previous_model is None
                             else "djpoolSearchUpdated"
                         )
-                        app_page.evaluate(
+                        if not evaluate_open_page(
+                            app_page,
                             f"([requestId, model, done]) => window.djpool.{callback}(requestId, model, done)",
                             [request_id, model, done],
-                        )
+                        ):
+                            break
                         if not done:
                             job["offset"] = offset + 50
                             job["model"] = model
@@ -693,10 +714,13 @@ def run() -> int:
                             if previous_model is None
                             else "djpoolSearchPaginationFailed"
                         )
-                        app_page.evaluate(
+                        if not evaluate_open_page(
+                            app_page,
                             f"([requestId, message]) => window.djpool.{callback}(requestId, message)",
                             [request_id, str(exc)],
-                        )
+                        ):
+                            break
+                closed_during_callback = False
                 completed_rvremix = [
                     request_id
                     for request_id, future in pending_rvremix_searches.items()
@@ -706,21 +730,31 @@ def run() -> int:
                     future = pending_rvremix_searches.pop(request_id)
                     try:
                         model = future.result()
-                        app_page.evaluate(
+                        if not evaluate_open_page(
+                            app_page,
                             "([requestId, model]) => window.djpool.rvremixSearchSucceeded(requestId, model)",
                             [request_id, model],
-                        )
+                        ):
+                            closed_during_callback = True
+                            break
                     except Exception as exc:
-                        app_page.evaluate(
+                        if not evaluate_open_page(
+                            app_page,
                             "([requestId, message]) => window.djpool.rvremixSearchFailed(requestId, message)",
                             [request_id, str(exc)],
-                        )
+                        ):
+                            closed_during_callback = True
+                            break
+                if closed_during_callback:
+                    break
                 if pending_notifications:
                     notification = pending_notifications.pop(0)
-                    app_page.evaluate(
+                    if not evaluate_open_page(
+                        app_page,
                         "([message, warning]) => window.djpool.downloadFinished(message, warning)",
                         [notification["message"], notification["warning"]],
-                    )
+                    ):
+                        break
                 if pending_cached_downloads:
                     cached_download = pending_cached_downloads.pop(0)
                     try:
@@ -790,35 +824,42 @@ def run() -> int:
                         record = media_cache[token]
                         cached_media_by_request[request_id] = token
                         local_url = f"{MEDIA_URL_PREFIX}{token}"
-                        if not app_page.is_closed():
-                            app_page.evaluate(
-                                "([requestId, url, kind]) => window.djpool.previewReady(requestId, url, kind)",
-                                [request_id, local_url, record["kind"]],
-                            )
+                        if not evaluate_open_page(
+                            app_page,
+                            "([requestId, url, kind]) => window.djpool.previewReady(requestId, url, kind)",
+                            [request_id, local_url, record["kind"]],
+                        ):
+                            break
                     except Exception as exc:
                         message = f"Could not cache preview: {exc}"
                         print(message, file=sys.stderr)
-                        if not app_page.is_closed():
-                            app_page.evaluate(
-                                "([requestId, message]) => window.djpool.previewFailed(requestId, message)",
-                                [request_id, message],
-                            )
+                        if not evaluate_open_page(
+                            app_page,
+                            "([requestId, message]) => window.djpool.previewFailed(requestId, message)",
+                            [request_id, message],
+                        ):
+                            break
                 if pending_refreshes:
                     query = pending_refreshes[-1]
                     pending_refreshes.clear()
                     try:
                         refreshed = capture_bootstrap(context, app_page, query)
                         djpool_template = refreshed
-                        if not app_page.is_closed():
-                            app_page.evaluate(
-                                "([cache, query]) => window.djpool.bootstrapSucceeded(cache, query)",
-                                [refreshed, query],
-                            )
+                        if not evaluate_open_page(
+                            app_page,
+                            "([cache, query]) => window.djpool.bootstrapSucceeded(cache, query)",
+                            [refreshed, query],
+                        ):
+                            break
                     except Exception as exc:
                         message = f"Could not refresh the DJPoolRecords session: {exc}"
                         print(message, file=sys.stderr)
-                        if not app_page.is_closed():
-                            app_page.evaluate("message => window.djpool.bootstrapFailed(message)", message)
+                        if not evaluate_open_page(
+                            app_page,
+                            "message => window.djpool.bootstrapFailed(message)",
+                            message,
+                        ):
+                            break
                 try:
                     app_page.wait_for_timeout(250)
                 except Exception:
