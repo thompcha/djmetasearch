@@ -30,6 +30,8 @@ If a macOS security warning prevents the installer from opening, Control-click
 
 Press Command-Space, type **DJMetaSearch**, and press Return. Starting without
 a selected file is supported; the window opens with an empty search field.
+The launcher closes its own Terminal tab after the search window exits normally;
+it leaves the tab open when startup fails so the error remains available.
 
 DJPoolRecords may show its normal login or browser challenge the first time.
 RVRemix needs no saved login. Downloads go to `~/Downloads`.

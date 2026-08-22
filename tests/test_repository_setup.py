@@ -34,6 +34,8 @@ def test_launcher_and_automator_invocations_match_cli_contract() -> None:
     launcher = (ROOT / "scripts" / "DJMetaSearch.command").read_text(encoding="utf-8")
     automator = (ROOT / "automator_search_from_tags.zsh").read_text(encoding="utf-8")
     assert '"$PYTHON" "$SEARCH_SCRIPT"' in launcher
+    assert 'close_own_terminal_tab "$LAUNCH_TTY"' in launcher
+    assert "tty of terminalTab is targetTTY" in launcher
     assert '"$PYTHON" "$SEARCH_SCRIPT" --print-query "$1"' in automator
 
 
