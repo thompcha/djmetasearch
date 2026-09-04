@@ -9,6 +9,20 @@ def test_ui_has_daily_workflow_controls() -> None:
         assert control in UI
 
 
+def test_ui_has_sortable_bpm_column() -> None:
+    assert 'className = "column-sort bpm-sort"' in UI
+    assert 'className = "result-bpm"' in UI
+    assert 'state.bpmSort === "asc" ? "desc" : "asc"' in UI
+    assert "Number.isFinite(item.bpm)" in UI
+    assert "item.display_name || item.name" in UI
+
+
+def test_ui_has_sortable_size_column() -> None:
+    assert 'className = "column-sort size-sort"' in UI
+    assert 'state.sizeSort === "asc" ? "desc" : "asc"' in UI
+    assert 'state.bpmSort ? "bpm" : "size_bytes"' in UI
+
+
 def test_clear_modifier_removes_the_trailing_variant() -> None:
     assert "function clearQueryModifier(query)" in UI
     assert "runSearch(clearQueryModifier(queryInput.value || state.activeQuery), false)" in UI
@@ -31,6 +45,16 @@ def test_ui_queries_and_labels_both_providers() -> None:
     assert "djpoolSearchSucceeded" in UI
     assert "requestRVRemixSearch" in UI
     assert 'item.provider === "RVRemix"' in UI
+
+
+def test_ui_queries_resolves_and_labels_crate_search() -> None:
+    assert "requestCrateSearch" in UI
+    assert "requestCrateResolve" in UI
+    assert "crateSearchSucceeded" in UI
+    assert "crateResolveSucceeded" in UI
+    assert 'item.provider === "DJFolders"' in UI
+    assert "state.crateEnabled" in UI
+    assert "DJFolders" in UI
     assert "DJPoolRecords results ready; loading RVRemix" in UI
     assert "generation !== state.searchGeneration" in UI
     assert "rvremixSearchSucceeded" in UI

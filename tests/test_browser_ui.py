@@ -305,6 +305,131 @@ def test_renders_djpoolrecords_before_delayed_rvremix_results() -> None:
         browser.close()
 
 
+def test_crate_search_arrives_asynchronously_and_resolves_only_on_action() -> None:
+    crate_model = {
+        "count": 1,
+        "results": [{
+            "id": "crate-6080796180102",
+            "provider_item_id": "6080796180102",
+            "name": "Artist - Crate Audio 108.mp3",
+            "display_name": "Artist - Crate Audio",
+            "filename": "Artist - Crate Audio 108.mp3",
+            "bpm": 108,
+            "size": "5.5 MB",
+            "size_bytes": 5_815_654,
+            "kind": "audio",
+            "mime_type": "audio/mpeg",
+            "preview_url": "",
+            "download_url": "",
+            "resolvable": True,
+            "provider": "DJFolders",
+        }],
+    }
+    stream_url = "https://pod.djpanaflex.com/crate-search/?action=stream&id=6080796180102&key=fixture"
+    download_url = "https://pod.djpanaflex.com/crate-search/?action=download&id=6080796180102&key=fixture"
+    resolves: list[str] = []
+    remote_downloads: list[dict[str, object]] = []
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.route(f"{APP_URL}*", lambda route: route.fulfill(status=200, content_type="text/html", body=UI))
+        page.route(
+            "https://pod.djpanaflex.com/crate-search/**",
+            lambda route: route.fulfill(status=200, content_type="audio/mpeg", body=b"fixture-audio"),
+        )
+        page.expose_binding("requestDJPoolSearch", lambda _source, query: parse_search_payload(PAYLOAD))
+        page.expose_binding("requestRVRemixSearch", lambda _source, query: {"count": 0, "results": []})
+        page.expose_binding("requestCrateSearch", lambda _source, query: "crate-request")
+        page.expose_binding(
+            "requestCrateResolve",
+            lambda _source, track_id: resolves.append(track_id) or {
+                "preview_url": stream_url,
+                "download_url": download_url,
+                "mime_type": "audio/mpeg",
+                "direct_stream": True,
+            },
+        )
+        page.expose_binding(
+            "requestRemoteDownload",
+            lambda _source, raw: remote_downloads.append(json.loads(raw)) or True,
+        )
+        page.expose_binding(
+            "mergeResultModels",
+            lambda _source, raw: merge_result_models(
+                json.loads(raw)["models"],
+                later_title_term=json.loads(raw)["later_title_term"],
+            ),
+        )
+        page.expose_binding("requestBootstrap", lambda _source, query: True)
+        page.goto(APP_URL)
+        page.evaluate(
+            "([cache, query]) => window.djpool.start(cache, query, { djfolders: true })",
+            [TEMPLATE, "Artist"],
+        )
+
+        page.wait_for_function("() => document.querySelectorAll('.result').length === 3")
+        assert "DJFolders" in page.locator("#status").inner_text()
+        assert resolves == []
+
+        page.evaluate(
+            "model => window.djpool.crateSearchSucceeded('crate-request', model)",
+            crate_model,
+        )
+        page.wait_for_selector(".provider.djfolders")
+        assert page.locator("#count").inner_text() == (
+            "4 results · 3 DJPoolRecords · 1 DJFolders"
+        )
+        crate_row = page.locator(".result", has=page.locator(".provider.djfolders"))
+        assert crate_row.locator(".result-bpm").inner_text() == "108"
+        assert resolves == []
+
+        crate_row.click(position={"x": 12, "y": 12})
+        page.wait_for_selector("#player audio")
+        assert resolves == ["6080796180102"]
+        assert page.locator("#player audio").get_attribute("src") == stream_url
+        page.locator("#player-download").click()
+        assert remote_downloads == [{
+            "id": "crate-6080796180102",
+            "filename": "Artist - Crate Audio 108.mp3",
+            "mime_type": "audio/mpeg",
+            "url": download_url,
+        }]
+        browser.close()
+
+
+def test_missing_djfolders_key_is_reported_instead_of_silently_omitted() -> None:
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.route(f"{APP_URL}*", lambda route: route.fulfill(status=200, content_type="text/html", body=UI))
+        page.expose_binding("requestDJPoolSearch", lambda _source, query: parse_search_payload(PAYLOAD))
+        page.expose_binding("requestRVRemixSearch", lambda _source, query: {"count": 0, "results": []})
+        page.expose_binding(
+            "mergeResultModels",
+            lambda _source, raw: merge_result_models(
+                json.loads(raw)["models"],
+                later_title_term=json.loads(raw)["later_title_term"],
+            ),
+        )
+        page.expose_binding("requestBootstrap", lambda _source, query: True)
+        page.goto(APP_URL)
+        page.evaluate(
+            "([cache, query, options]) => window.djpool.start(cache, query, options)",
+            [TEMPLATE, "de la soul", {
+                "djfolders": False,
+                "djfoldersReason": "API key not configured",
+            }],
+        )
+        page.wait_for_function(
+            "() => document.querySelector('#status').textContent.includes('DJFolders unavailable')"
+        )
+        assert page.locator("#status").inner_text() == (
+            "DJFolders unavailable: API key not configured"
+        )
+        browser.close()
+
+
 def test_djpool_later_pages_merge_asynchronously_and_finish() -> None:
     initial = parse_search_payload(rest_payload("Artist - First", "Artist - Second"))
     accumulated = parse_search_payload(
@@ -450,10 +575,86 @@ def test_intro_search_merges_exact_and_base_queries_without_duplicates() -> None
         assert page.locator(".result").count() == 2
         assert page.locator(".result-name").all_inner_texts() == [
             "Blood - Spinning Wheel (Intro)",
-            "Blood Sweat And Tears - Spinning Wheel (Intro) 97",
+            "Blood Sweat And Tears - Spinning Wheel (Intro)",
         ]
+        assert page.locator(".result-bpm").all_inner_texts() == ["", "97"]
         assert page.locator("#status").inner_text() == ""
         assert refreshes == []
+        browser.close()
+
+
+def test_numeric_columns_sort_both_directions_with_blanks_last() -> None:
+    payload = {
+        "hits": [
+            {"name": "Artist - High 128", "ext": "mp3", "size": "10 MB", "mime": "audio/mpeg"},
+            {"name": "Artist - Missing BPM", "ext": "mp3", "size": "2 MB", "mime": "audio/mpeg"},
+            {"name": "Artist - Low 90", "ext": "mp3", "size": "5 MB", "mime": "audio/mpeg"},
+            {"name": "Artist - Unknown", "ext": "mp3", "size": "", "mime": "audio/mpeg"},
+        ]
+    }
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.route(f"{APP_URL}*", lambda route: route.fulfill(status=200, content_type="text/html", body=UI))
+        page.expose_binding("parseResultPayload", lambda _source, raw: parse_search_payload(json.loads(raw)))
+        page.expose_binding("requestDJPoolSearch", lambda _source, query: parse_search_payload(payload))
+        page.expose_binding("requestRVRemixSearch", lambda _source, query: {"count": 0, "results": []})
+        page.expose_binding(
+            "mergeResultModels",
+            lambda _source, raw: merge_result_models(
+                json.loads(raw)["models"],
+                later_title_term=json.loads(raw)["later_title_term"],
+            ),
+        )
+        page.expose_binding("requestBootstrap", lambda _source, query: True)
+        page.goto(APP_URL)
+        page.evaluate("([cache, query]) => window.djpool.start(cache, query)", [TEMPLATE, "Artist"])
+        page.wait_for_selector(".bpm-sort")
+
+        assert page.locator(".result-name").all_inner_texts() == [
+            "Artist - High",
+            "Artist - Missing BPM",
+            "Artist - Low",
+            "Artist - Unknown",
+        ]
+        assert page.locator(".result-bpm").all_inner_texts() == ["128", "", "90", ""]
+
+        page.locator(".bpm-sort").click()
+        assert page.locator(".result-name").all_inner_texts() == [
+            "Artist - Low",
+            "Artist - High",
+            "Artist - Missing BPM",
+            "Artist - Unknown",
+        ]
+        assert page.locator(".bpm-sort").inner_text() == "BPM ↑"
+
+        page.locator(".bpm-sort").click()
+        assert page.locator(".result-name").all_inner_texts() == [
+            "Artist - High",
+            "Artist - Low",
+            "Artist - Missing BPM",
+            "Artist - Unknown",
+        ]
+        assert page.locator(".bpm-sort").inner_text() == "BPM ↓"
+
+        page.locator(".size-sort").click()
+        assert page.locator(".result-name").all_inner_texts() == [
+            "Artist - Missing BPM",
+            "Artist - Low",
+            "Artist - High",
+            "Artist - Unknown",
+        ]
+        assert page.locator(".size-sort").inner_text() == "SIZE ↑"
+        assert page.locator(".bpm-sort").inner_text() == "BPM ↕"
+
+        page.locator(".size-sort").click()
+        assert page.locator(".result-name").all_inner_texts() == [
+            "Artist - High",
+            "Artist - Low",
+            "Artist - Missing BPM",
+            "Artist - Unknown",
+        ]
+        assert page.locator(".size-sort").inner_text() == "SIZE ↓"
         browser.close()
 
 

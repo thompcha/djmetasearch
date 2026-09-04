@@ -9,6 +9,7 @@ from standalone_app import (
     page_is_logged_out,
     evaluate_open_page,
     parse_byte_range,
+    resolve_crate_api_key,
     resolve_login_credentials,
     search_djpoolrecords,
     try_auto_login,
@@ -129,6 +130,20 @@ def test_credentials_prefer_environment_then_keychain(monkeypatch) -> None:
     )
 
     assert resolve_login_credentials() == ("environment-user", "keychain-password")
+
+
+def test_djfolders_key_prefers_environment_then_keychain(monkeypatch) -> None:
+    monkeypatch.setenv("DJFOLDERS_API_KEY", "environment-key")
+    monkeypatch.delenv("CRATE_SEARCH_API_KEY", raising=False)
+    monkeypatch.setattr(
+        standalone_app,
+        "read_keychain_secret",
+        lambda _service, _account: "keychain-key",
+    )
+    assert resolve_crate_api_key() == "environment-key"
+
+    monkeypatch.delenv("DJFOLDERS_API_KEY")
+    assert resolve_crate_api_key() == "keychain-key"
 
 
 def test_djpool_search_encodes_spaces_as_percent_20() -> None:

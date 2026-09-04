@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Launch the combined DJPoolRecords and RVRemix search experience."""
+"""Launch the combined DJPoolRecords, RVRemix, and DJFolders experience."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ import time
 import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
-from urllib.parse import quote, urlencode, urlsplit
+from urllib.parse import parse_qs, quote, urlencode, urlsplit
 
 try:
     from playwright.sync_api import BrowserContext, Error as PlaywrightError, Page, Route, sync_playwright
@@ -26,8 +26,10 @@ except ImportError as exc:  # pragma: no cover - exercised before dependencies e
 
 from djmetasearch.cleanup import CleanupResult, process_download, unique_destination
 from djmetasearch.cache import load_cache, make_cache, save_cache, validate_cache
+from djmetasearch.crate_search import BASE_URL as CRATE_SEARCH_URL, CrateSearchClient
 from djmetasearch.query import default_query, resolve_query
 from djmetasearch.results import (
+    CRATE_SEARCH_HOST,
     filter_djpool_model,
     merge_result_models,
     parse_search_payload,
@@ -49,6 +51,7 @@ LOGIN_URL = "https://djpoolrecords.com/djpoolrecords-user-login/"
 SEARCH_URL = "https://djpoolrecords.com/wp-json/dpr-search/v1/files"
 AUDIO_SELECTOR = "input.dpr-meili-input[placeholder='Search audio files...']"
 KEYCHAIN_SERVICE = "djpoolrecords"
+DJFOLDERS_KEYCHAIN_SERVICE = "djfolders"
 MEDIA_TYPES = {
     "audio": "audio/mpeg",
     "video": "video/mp4",
@@ -166,6 +169,16 @@ def resolve_login_credentials() -> tuple[str, str]:
     if not password:
         password = read_keychain_secret(KEYCHAIN_SERVICE, "password")
     return username, password
+
+
+def resolve_crate_api_key() -> str:
+    """Read the DJFolders key from current or legacy secret names."""
+    return (
+        os.environ.get("DJFOLDERS_API_KEY", "")
+        or os.environ.get("CRATE_SEARCH_API_KEY", "")
+        or read_keychain_secret(DJFOLDERS_KEYCHAIN_SERVICE, "api-key")
+        or read_keychain_secret("crate-search", "api-key")
+    )
 
 
 def page_has_audio_module(page: Page) -> bool:
@@ -425,16 +438,26 @@ def cache_preview_media(
     if kind not in MEDIA_TYPES:
         raise ValueError("The preview type is not supported.")
 
+    hostname = urlsplit(remote_url).hostname
+    referer = (
+        RVREMIX_URL if hostname == "rvremix.com"
+        else CRATE_SEARCH_URL if hostname == CRATE_SEARCH_HOST
+        else BASE_URL
+    )
     response = context.request.get(
         remote_url,
         headers={
             "Accept": "audio/*, video/*, */*;q=0.8",
             "Origin": f"{urlsplit(remote_url).scheme}://{urlsplit(remote_url).hostname}",
-            "Referer": RVREMIX_URL if urlsplit(remote_url).hostname == "rvremix.com" else BASE_URL,
+            "Referer": referer,
         },
         timeout=60_000,
     )
-    provider_name = "RVRemix" if urlsplit(remote_url).hostname == "rvremix.com" else "DJPoolRecords"
+    provider_name = (
+        "RVRemix" if hostname == "rvremix.com"
+        else "DJFolders" if hostname == CRATE_SEARCH_HOST
+        else "DJPoolRecords"
+    )
     if not response.ok:
         raise RuntimeError(f"{provider_name} returned HTTP {response.status} while caching the preview.")
     body = response.body()
@@ -442,8 +465,8 @@ def cache_preview_media(
         raise RuntimeError(f"{provider_name} returned an empty preview.")
 
     response_type = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
-    if urlsplit(remote_url).hostname == "rvremix.com" and not response_type.startswith("audio/"):
-        raise RuntimeError(f"RVRemix returned non-audio preview content ({response_type or 'unknown'}).")
+    if hostname in {"rvremix.com", CRATE_SEARCH_HOST} and not response_type.startswith("audio/"):
+        raise RuntimeError(f"{provider_name} returned non-audio content ({response_type or 'unknown'}).")
     requested_type = str(request_data.get("mime_type") or "").split(";", 1)[0].strip().lower()
     mime_type = response_type if response_type.startswith(("audio/", "video/")) else requested_type
     if not mime_type.startswith(("audio/", "video/")):
@@ -529,6 +552,8 @@ def run() -> int:
     pending_remote_downloads: list[dict[str, object]] = []
     pending_notifications: list[dict[str, object]] = []
     pending_rvremix_searches: dict[str, Future[dict[str, object]]] = {}
+    pending_crate_searches: dict[str, Future[dict[str, object]]] = {}
+    pending_crate_resolves: dict[str, Future[dict[str, object]]] = {}
     media_cache: dict[str, dict[str, object]] = {}
     cached_media_by_url: dict[str, str] = {}
     cached_media_by_request: dict[str, str] = {}
@@ -536,6 +561,9 @@ def run() -> int:
     preview_cache_dir = staging_dir / "previews"
     rvremix = RVRemixClient()
     rvremix_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="rvremix-search")
+    crate_api_key = resolve_crate_api_key()
+    crate_search = CrateSearchClient(crate_api_key) if crate_api_key else None
+    crate_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="crate-search")
     try:
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(
@@ -556,7 +584,8 @@ def run() -> int:
                         "Cache-Control": "no-store",
                         "Content-Security-Policy": (
                             "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
-                            "connect-src 'self'; media-src 'self' blob:; img-src 'self' data:; form-action 'none'"
+                            "connect-src 'self'; media-src 'self' blob: https://pod.djpanaflex.com; "
+                            "img-src 'self' data:; form-action 'none'"
                         ),
                     },
                 )
@@ -580,6 +609,24 @@ def run() -> int:
                 request_id = uuid.uuid4().hex
                 pending_rvremix_searches[request_id] = rvremix_executor.submit(
                     rvremix.search, str(query or "")
+                )
+                return request_id
+
+            def queue_crate_search(_source: object, query: str) -> str:
+                if crate_search is None:
+                    raise RuntimeError("DJFolders is not configured.")
+                request_id = uuid.uuid4().hex
+                pending_crate_searches[request_id] = crate_executor.submit(
+                    crate_search.search, str(query or "")
+                )
+                return request_id
+
+            def queue_crate_resolve(_source: object, track_id: str) -> str:
+                if crate_search is None:
+                    raise RuntimeError("DJFolders is not configured.")
+                request_id = uuid.uuid4().hex
+                pending_crate_resolves[request_id] = crate_executor.submit(
+                    crate_search.resolve, str(track_id or "")
                 )
                 return request_id
 
@@ -625,7 +672,11 @@ def run() -> int:
                 if not isinstance(request_data, dict):
                     raise ValueError("Remote download request was invalid.")
                 remote_url = safe_preview_url(request_data.get("url"))
-                if urlsplit(remote_url).hostname != "rvremix.com":
+                parsed = urlsplit(remote_url)
+                allowed = parsed.hostname == "rvremix.com"
+                if parsed.hostname == CRATE_SEARCH_HOST:
+                    allowed = parse_qs(parsed.query).get("action") == ["download"]
+                if not allowed:
                     raise ValueError("Remote download URL was missing or unsafe.")
                 request_data["url"] = remote_url
                 request_data["kind"] = "audio"
@@ -634,6 +685,8 @@ def run() -> int:
 
             app_page.expose_binding("requestDJPoolSearch", queue_djpool_search)
             app_page.expose_binding("requestRVRemixSearch", queue_rvremix_search)
+            app_page.expose_binding("requestCrateSearch", queue_crate_search)
+            app_page.expose_binding("requestCrateResolve", queue_crate_resolve)
             app_page.expose_binding("mergeResultModels", merge_models)
             app_page.expose_binding("requestBootstrap", queue_refresh)
             app_page.expose_binding("requestPreview", queue_preview)
@@ -658,8 +711,11 @@ def run() -> int:
             djpool_template = load_cache(CACHE_PATH)
             if not evaluate_open_page(
                 app_page,
-                "([cache, query]) => window.djpool.start(cache, query)",
-                [djpool_template, initial_query],
+                "([cache, query, options]) => window.djpool.start(cache, query, options)",
+                [djpool_template, initial_query, {
+                    "djfolders": crate_search is not None,
+                    "djfoldersReason": "" if crate_search is not None else "API key not configured",
+                }],
             ):
                 browser.close()
                 return 0
@@ -745,6 +801,34 @@ def run() -> int:
                         ):
                             closed_during_callback = True
                             break
+                if closed_during_callback:
+                    break
+                for jobs, succeeded, failed in (
+                    (pending_crate_searches, "crateSearchSucceeded", "crateSearchFailed"),
+                    (pending_crate_resolves, "crateResolveSucceeded", "crateResolveFailed"),
+                ):
+                    completed = [request_id for request_id, future in jobs.items() if future.done()]
+                    for request_id in completed:
+                        future = jobs.pop(request_id)
+                        try:
+                            payload = future.result()
+                            if not evaluate_open_page(
+                                app_page,
+                                f"([requestId, payload]) => window.djpool.{succeeded}(requestId, payload)",
+                                [request_id, payload],
+                            ):
+                                closed_during_callback = True
+                                break
+                        except Exception as exc:
+                            if not evaluate_open_page(
+                                app_page,
+                                f"([requestId, message]) => window.djpool.{failed}(requestId, message)",
+                                [request_id, str(exc)],
+                            ):
+                                closed_during_callback = True
+                                break
+                    if closed_during_callback:
+                        break
                 if closed_during_callback:
                     break
                 if pending_notifications:
@@ -873,6 +957,7 @@ def run() -> int:
             browser.close()
     finally:
         rvremix_executor.shutdown(wait=False, cancel_futures=True)
+        crate_executor.shutdown(wait=False, cancel_futures=True)
         shutil.rmtree(staging_dir, ignore_errors=True)
     return 0
 

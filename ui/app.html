@@ -133,6 +133,17 @@
     .status.error { border-color: rgb(242 139 130 / 45%); color: var(--danger); }
 
     .results { display: grid; gap: 8px; margin-top: 8px; }
+    .results-header {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 18px;
+      padding: 0 14px;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+    }
     .result {
       display: grid;
       grid-template-columns: minmax(0, 1fr) auto;
@@ -162,9 +173,28 @@
       text-transform: uppercase;
     }
     .provider.rvremix { border-color: #81421f; color: #ffad7b; }
-    .result-trailing { display: flex; align-items: center; justify-content: flex-end; gap: 14px; }
+    .provider.djfolders { border-color: #286c72; color: #74d8df; }
+    .column-heads, .actions {
+      display: grid;
+      grid-template-columns: 34px 44px 48px 78px;
+      align-items: center;
+      gap: 7px;
+    }
+    .column-sort {
+      padding: 3px 0;
+      border: 0;
+      background: transparent;
+      color: inherit;
+      cursor: pointer;
+      font: inherit;
+      letter-spacing: inherit;
+      text-transform: inherit;
+    }
+    .column-sort:hover { color: var(--text); }
+    .bpm-sort { grid-column: 2; }
+    .size-sort { grid-column: 3; }
+    .result-bpm { color: var(--muted); font-size: 13px; text-align: center; white-space: nowrap; }
     .result-size { min-width: 48px; color: var(--muted); font-size: 13px; text-align: right; white-space: nowrap; }
-    .actions { display: flex; align-items: center; gap: 7px; }
     .action { display: inline-flex; align-items: center; justify-content: center; min-width: 78px; height: 34px; padding: 0 12px; border-color: #404a5a; background: #252d39; font-size: 13px; }
     .action:hover { background: #323c4b; }
     .action.preview-action {
@@ -238,7 +268,7 @@
       .search-row { flex-direction: column; }
       .primary { height: 42px; }
       .result { gap: 10px; }
-      .result-trailing { gap: 8px; }
+      .results-header { gap: 10px; }
       .result-size { min-width: 40px; }
       .status { left: 10px; right: 10px; max-width: none; }
       .player { grid-template-columns: 1fr auto; padding-inline: 12px; }
@@ -252,7 +282,7 @@
   <main class="app">
     <header class="masthead">
       <div>
-        <p class="eyebrow">DJPoolRecords + RVRemix</p>
+        <p class="eyebrow">DJPoolRecords + RVRemix + DJFolders</p>
         <h1>DJ MetaSearch</h1>
       </div>
       <div id="count" class="count" aria-live="polite"></div>
@@ -300,20 +330,32 @@
         searchGeneration: 0,
         djpoolRequests: new Map(),
         rvremixRequests: new Map(),
+        crateRequests: new Map(),
+        crateResolveRequests: new Map(),
         djpoolQueries: new Map(),
         rvremixQueries: new Map(),
+        crateQueries: new Map(),
+        crateResolved: new Map(),
+        crateEnabled: false,
+        crateUnavailable: "",
         activeDJPoolKeys: [],
         activeModifier: "",
         activeDJPoolModel: null,
         activeRVModel: null,
+        activeCrateModel: null,
         activeRVFinished: true,
+        activeCrateFinished: true,
         activeDJPoolError: "",
         activeRVError: "",
+        activeCrateError: "",
         renderRevision: 0,
         activePreviewRequest: null,
         previewGeneration: 0,
         previewFilename: "",
-        previewCanDownload: false
+        previewCanDownload: false,
+        activeDirectDownload: null,
+        bpmSort: "",
+        sizeSort: ""
       };
       const queryInput = document.getElementById("query");
       const form = document.getElementById("search-form");
@@ -380,12 +422,60 @@
         playerDownload.disabled = false;
         state.previewFilename = "";
         state.previewCanDownload = false;
+        state.activeDirectDownload = null;
+      }
+
+      async function resolveCrateItem(item) {
+        const trackId = String(item.provider_item_id || "");
+        if (!trackId) throw new Error("DJFolders result is missing its track ID.");
+        if (state.crateResolved.has(trackId)) return state.crateResolved.get(trackId);
+        const pending = (async () => {
+          const request = await window.requestCrateResolve(trackId);
+          if (request && typeof request === "object") return { ...item, ...request, resolvable: false };
+          const resolved = await new Promise((resolve, reject) => {
+            state.crateResolveRequests.set(String(request), { resolve, reject });
+          });
+          return { ...item, ...resolved, resolvable: false };
+        })();
+        state.crateResolved.set(trackId, pending);
+        pending.catch(() => state.crateResolved.delete(trackId));
+        return pending;
       }
 
       async function openPreview(item) {
         closePlayer();
-        if (!item.preview_url || !["audio", "video"].includes(item.kind)) return;
         const generation = state.previewGeneration;
+        if (item.provider === "DJFolders" && item.resolvable) {
+          setStatus(`Resolving “${item.name}” from DJFolders…`);
+          try {
+            item = await resolveCrateItem(item);
+            if (generation !== state.previewGeneration) return;
+          } catch (error) {
+            setStatus(`Could not resolve DJFolders preview: ${error.message}`, true);
+            return;
+          }
+        }
+        if (!item.preview_url || !["audio", "video"].includes(item.kind)) return;
+        if (item.direct_stream) {
+          const media = document.createElement("audio");
+          media.controls = true;
+          media.controlsList.add("nodownload");
+          media.autoplay = true;
+          media.preload = "metadata";
+          media.src = item.preview_url;
+          media.addEventListener("error", () => setStatus("The DJFolders preview could not be played.", true), { once: true });
+          playerTitle.textContent = item.name;
+          playerMedia.replaceChildren(media);
+          player.dataset.kind = "audio";
+          document.body.classList.add("preview-open");
+          player.classList.add("visible");
+          state.previewFilename = item.filename || item.name || "download.mp3";
+          state.previewCanDownload = Boolean(item.download_url);
+          state.activeDirectDownload = item;
+          playerDownload.hidden = !state.previewCanDownload;
+          setStatus("");
+          return;
+        }
         const loading = document.createElement("div");
         loading.className = "preview-loading";
         loading.textContent = "Caching preview locally…";
@@ -429,7 +519,7 @@
           counts[provider] = (counts[provider] || 0) + 1;
           return counts;
         }, {});
-        const breakdown = ["DJPoolRecords", "RVRemix"]
+        const breakdown = ["DJPoolRecords", "RVRemix", "DJFolders"]
           .filter(provider => providerCounts[provider])
           .map(provider => `${providerCounts[provider]} ${provider}`)
           .join(" · ");
@@ -443,28 +533,78 @@
           return;
         }
 
-        for (const item of model.results) {
+        const header = document.createElement("div");
+        header.className = "results-header";
+        const headerSpacer = document.createElement("div");
+        const columnHeads = document.createElement("div");
+        columnHeads.className = "column-heads";
+        const bpmSort = document.createElement("button");
+        bpmSort.className = "column-sort bpm-sort";
+        bpmSort.type = "button";
+        bpmSort.textContent = state.bpmSort === "asc" ? "BPM ↑" : state.bpmSort === "desc" ? "BPM ↓" : "BPM ↕";
+        bpmSort.title = state.bpmSort === "asc" ? "Sort BPM descending" : "Sort BPM ascending";
+        bpmSort.setAttribute("aria-label", bpmSort.title);
+        bpmSort.addEventListener("click", () => {
+          state.bpmSort = state.bpmSort === "asc" ? "desc" : "asc";
+          state.sizeSort = "";
+          render(model);
+        });
+        const sizeSort = document.createElement("button");
+        sizeSort.className = "column-sort size-sort";
+        sizeSort.type = "button";
+        sizeSort.textContent = state.sizeSort === "asc" ? "SIZE ↑" : state.sizeSort === "desc" ? "SIZE ↓" : "SIZE ↕";
+        sizeSort.title = state.sizeSort === "asc" ? "Sort size descending" : "Sort size ascending";
+        sizeSort.setAttribute("aria-label", sizeSort.title);
+        sizeSort.addEventListener("click", () => {
+          state.sizeSort = state.sizeSort === "asc" ? "desc" : "asc";
+          state.bpmSort = "";
+          render(model);
+        });
+        columnHeads.append(bpmSort, sizeSort);
+        header.append(headerSpacer, columnHeads);
+        results.appendChild(header);
+
+        const renderedResults = model.results.map((item, index) => ({ item, index }));
+        if (state.bpmSort || state.sizeSort) {
+          renderedResults.sort((left, right) => {
+            const field = state.bpmSort ? "bpm" : "size_bytes";
+            const direction = state.bpmSort || state.sizeSort;
+            const leftHasValue = Number.isFinite(left.item[field]);
+            const rightHasValue = Number.isFinite(right.item[field]);
+            if (leftHasValue !== rightHasValue) return leftHasValue ? -1 : 1;
+            if (!leftHasValue) return left.index - right.index;
+            const difference = left.item[field] - right.item[field];
+            return (direction === "asc" ? difference : -difference) || left.index - right.index;
+          });
+        }
+
+        for (const { item } of renderedResults) {
           const row = document.createElement("article");
           row.className = "result";
           const details = document.createElement("div");
           details.className = "result-details";
           const name = document.createElement("div");
           name.className = "result-name";
-          name.textContent = item.name;
+          name.textContent = item.display_name || item.name;
           details.append(name);
           const provider = document.createElement("span");
-          provider.className = `provider ${item.provider === "RVRemix" ? "rvremix" : "djpoolrecords"}`;
+          const providerClass = item.provider === "RVRemix"
+            ? "rvremix"
+            : item.provider === "DJFolders" ? "djfolders" : "djpoolrecords";
+          provider.className = `provider ${providerClass}`;
           provider.textContent = item.provider || "Unknown";
           details.append(provider);
 
-          const trailing = document.createElement("div");
-          trailing.className = "result-trailing";
+          const bpm = document.createElement("div");
+          bpm.className = "result-bpm";
+          bpm.textContent = Number.isFinite(item.bpm) ? String(item.bpm) : "";
           const size = document.createElement("div");
           size.className = "result-size";
           size.textContent = item.size || "";
           const actions = document.createElement("div");
           actions.className = "actions";
-          const isPlayable = item.preview_url && ["audio", "video"].includes(item.kind);
+          const canResolve = item.provider === "DJFolders" && item.resolvable;
+          const isPlayable = (item.preview_url || canResolve) && ["audio", "video"].includes(item.kind);
           if (isPlayable) {
             row.classList.add("previewable");
             row.tabIndex = 0;
@@ -488,11 +628,14 @@
             preview.setAttribute("aria-hidden", "true");
             preview.tabIndex = -1;
             actions.appendChild(preview);
+          } else {
+            actions.appendChild(document.createElement("span"));
           }
-          actions.appendChild(size);
-          if (item.download_url) {
-            const download = item.provider === "RVRemix" ? document.createElement("button") : makeAction("Download", "download");
-            if (item.provider === "RVRemix") {
+          actions.append(bpm, size);
+          if (item.download_url || canResolve) {
+            const isRemoteDownload = ["RVRemix", "DJFolders"].includes(item.provider);
+            const download = isRemoteDownload ? document.createElement("button") : makeAction("Download", "download");
+            if (isRemoteDownload) {
               download.className = "action download";
               download.type = "button";
               download.textContent = "Download";
@@ -501,17 +644,18 @@
                 event.stopPropagation();
                 if (download.getAttribute("aria-disabled") === "true") return;
                 download.setAttribute("aria-disabled", "true");
-                setStatus(`Downloading ${item.filename} from RVRemix…`);
+                setStatus(`Preparing ${item.filename} from ${item.provider}…`);
                 try {
+                  const downloadable = canResolve ? await resolveCrateItem(item) : item;
                   await window.requestRemoteDownload(JSON.stringify({
-                    id: item.id,
-                    filename: item.filename,
-                    mime_type: item.mime_type || "audio/mpeg",
-                    url: item.download_url
+                    id: downloadable.id,
+                    filename: downloadable.filename,
+                    mime_type: downloadable.mime_type || "audio/mpeg",
+                    url: downloadable.download_url
                   }));
                 } catch (error) {
                   download.removeAttribute("aria-disabled");
-                  setStatus(`Could not start RVRemix download: ${error.message}`, true);
+                  setStatus(`Could not start ${item.provider} download: ${error.message}`, true);
                 }
               });
             } else {
@@ -523,9 +667,10 @@
               });
             }
             actions.appendChild(download);
+          } else {
+            actions.appendChild(document.createElement("span"));
           }
-          trailing.append(actions);
-          row.append(details, trailing);
+          row.append(details, actions);
           results.appendChild(row);
         }
       }
@@ -581,6 +726,21 @@
         return pending;
       }
 
+      async function fetchCrateModel(query) {
+        const key = queryKey(query);
+        if (state.crateQueries.has(key)) return state.crateQueries.get(key);
+        const pending = (async () => {
+          const request = await window.requestCrateSearch(query);
+          if (request && typeof request === "object") return request;
+          return new Promise((resolve, reject) => {
+            state.crateRequests.set(String(request), { resolve, reject });
+          });
+        })();
+        state.crateQueries.set(key, pending);
+        pending.catch(() => state.crateQueries.delete(key));
+        return pending;
+      }
+
       async function fetchProviderModel(fetcher, query, modifier, baseQuery) {
         if (!modifier || !baseQuery) return fetcher(query);
         const models = await Promise.all([fetcher(query), fetcher(baseQuery)]);
@@ -609,6 +769,19 @@
           setStatus(`${prefix}RVRemix unavailable: ${state.activeRVError}`, true);
           return;
         }
+        if (state.activeCrateError) {
+          const loading = !djpoolFinished || !state.activeRVFinished;
+          setStatus(`${loading ? "Other providers are still loading. " : ""}DJFolders unavailable: ${state.activeCrateError}`, true);
+          return;
+        }
+        if (state.crateEnabled && !state.activeCrateFinished) {
+          const others = [];
+          if (!djpoolFinished) others.push("DJPoolRecords");
+          if (!state.activeRVFinished) others.push("RVRemix");
+          others.push("DJFolders");
+          setStatus(`Loading ${others.join(", ").replace(/, ([^,]+)$/, " and $1")}…`);
+          return;
+        }
         if (!djpoolFinished && !state.activeRVFinished) {
           setStatus("Loading more DJPoolRecords and RVRemix…");
         } else if (!djpoolFinished) {
@@ -627,7 +800,7 @@
       async function renderActiveResults() {
         const generation = state.searchGeneration;
         const revision = ++state.renderRevision;
-        const models = [state.activeDJPoolModel, state.activeRVModel].filter(Boolean);
+        const models = [state.activeDJPoolModel, state.activeRVModel, state.activeCrateModel].filter(Boolean);
         const model = models.length > 1
           ? await window.mergeResultModels(JSON.stringify({ models, later_title_term: "" }))
           : (models[0] || { count: 0, results: [] });
@@ -680,9 +853,12 @@
         state.activeModifier = modifier;
         state.activeDJPoolModel = null;
         state.activeRVModel = null;
+        state.activeCrateModel = null;
         state.activeRVFinished = false;
+        state.activeCrateFinished = !state.crateEnabled;
         state.activeDJPoolError = "";
         state.activeRVError = "";
+        state.activeCrateError = state.crateEnabled ? "" : state.crateUnavailable;
         if (modifier && baseQuery) setStatus(`Searching for “${clean}” and “${baseQuery}”…`);
 
         // Start the slower provider immediately, but settle it so an early
@@ -690,6 +866,10 @@
         const rvremixTask = fetchProviderModel(
           fetchRVRemixModel, clean, modifier, baseQuery
         ).then(model => ({ model }), error => ({ error }));
+        const crateTask = state.crateEnabled
+          ? fetchProviderModel(fetchCrateModel, clean, modifier, baseQuery)
+              .then(model => ({ model }), error => ({ error }))
+          : Promise.resolve({ model: null });
 
         let djpoolModel;
         try {
@@ -700,13 +880,17 @@
             await requestRefresh(clean, "The saved connection expired. Refreshing it in the background…");
             return;
           }
-          const rvremix = await rvremixTask;
+          const [rvremix, crate] = await Promise.all([rvremixTask, crateTask]);
           if (generation !== state.searchGeneration) return;
           state.refreshing = false;
           setBusy(false);
-          if (rvremix.model?.results?.length) {
-            render(rvremix.model);
-            setStatus(`DJPoolRecords unavailable; showing RVRemix results. ${error.message}`, true);
+          state.activeRVFinished = true;
+          state.activeCrateFinished = true;
+          state.activeRVModel = rvremix.model || null;
+          state.activeCrateModel = crate.model || null;
+          if (state.activeRVModel?.results?.length || state.activeCrateModel?.results?.length) {
+            await renderActiveResults();
+            setStatus(`DJPoolRecords unavailable; showing other provider results. ${error.message}`, true);
           } else {
             setStatus(`Search failed after refreshing the session: ${error.message}`, true);
           }
@@ -719,16 +903,23 @@
         setBusy(false);
         await renderActiveResults();
 
-        const rvremix = await rvremixTask;
-        if (generation !== state.searchGeneration) return;
-        state.activeRVFinished = true;
-        if (rvremix.error) {
-          state.activeRVError = rvremix.error.message || "search failed";
+        const settleProvider = async (task, provider) => {
+          const result = await task;
+          if (generation !== state.searchGeneration) return;
+          if (provider === "RVRemix") {
+            state.activeRVFinished = true;
+            state.activeRVError = result.error?.message || "";
+            state.activeRVModel = result.model || null;
+          } else {
+            state.activeCrateFinished = true;
+            state.activeCrateError = result.error?.message || "";
+            state.activeCrateModel = result.model || null;
+          }
           await renderActiveResults();
-          return;
-        }
-        state.activeRVModel = rvremix.model;
-        await renderActiveResults();
+        };
+        const settlements = [settleProvider(rvremixTask, "RVRemix")];
+        if (state.crateEnabled) settlements.push(settleProvider(crateTask, "DJFolders"));
+        await Promise.all(settlements);
       }
 
       form.addEventListener("submit", event => {
@@ -745,23 +936,36 @@
       document.getElementById("close-player").addEventListener("click", closePlayer);
       playerDownload.addEventListener("click", async event => {
         event.preventDefault();
-        if (!state.activePreviewRequest || !state.previewCanDownload || playerDownload.disabled) return;
+        if (!state.previewCanDownload || playerDownload.disabled) return;
         playerDownload.disabled = true;
-        setStatus(`Saving cached preview ${state.previewFilename}…`);
         try {
+          if (state.activeDirectDownload) {
+            setStatus(`Downloading ${state.previewFilename} from DJFolders…`);
+            await window.requestRemoteDownload(JSON.stringify({
+              id: state.activeDirectDownload.id,
+              filename: state.previewFilename,
+              mime_type: state.activeDirectDownload.mime_type || "audio/mpeg",
+              url: state.activeDirectDownload.download_url
+            }));
+            return;
+          }
+          if (!state.activePreviewRequest) return;
+          setStatus(`Saving cached preview ${state.previewFilename}…`);
           await window.requestCachedDownload(JSON.stringify({
             request_id: state.activePreviewRequest,
             filename: state.previewFilename
           }));
         } catch (error) {
           playerDownload.disabled = false;
-          setStatus(`Could not save cached preview: ${error.message}`, true);
+          setStatus(`Could not start download: ${error.message}`, true);
         }
       });
 
       window.djpool = {
-        start(template, initialQuery) {
+        start(template, initialQuery, options = {}) {
           state.template = template || null;
+          state.crateEnabled = Boolean(options.djfolders || options.crateSearch);
+          state.crateUnavailable = String(options.djfoldersReason || "");
           state.refreshing = false;
           queryInput.value = initialQuery || "";
           if (initialQuery) runSearch(initialQuery, false);
@@ -827,6 +1031,30 @@
           if (!pending) return;
           state.rvremixRequests.delete(String(requestId));
           pending.reject(new Error(message || "RVRemix search failed."));
+        },
+        crateSearchSucceeded(requestId, model) {
+          const pending = state.crateRequests.get(String(requestId));
+          if (!pending) return;
+          state.crateRequests.delete(String(requestId));
+          pending.resolve(model);
+        },
+        crateSearchFailed(requestId, message) {
+          const pending = state.crateRequests.get(String(requestId));
+          if (!pending) return;
+          state.crateRequests.delete(String(requestId));
+          pending.reject(new Error(message || "DJFolders search failed."));
+        },
+        crateResolveSucceeded(requestId, resolved) {
+          const pending = state.crateResolveRequests.get(String(requestId));
+          if (!pending) return;
+          state.crateResolveRequests.delete(String(requestId));
+          pending.resolve(resolved);
+        },
+        crateResolveFailed(requestId, message) {
+          const pending = state.crateResolveRequests.get(String(requestId));
+          if (!pending) return;
+          state.crateResolveRequests.delete(String(requestId));
+          pending.reject(new Error(message || "DJFolders resolve failed."));
         },
         previewReady(requestId, localUrl, kind) {
           if (requestId !== state.activePreviewRequest || !player.classList.contains("visible")) return;

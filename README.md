@@ -1,8 +1,8 @@
 # DJ Meta Search
 
-DJ Meta Search is a macOS search window for DJPoolRecords and RVRemix. It
-combines both providers, previews media locally, and downloads files through the
-existing metadata-cleanup workflow.
+DJ Meta Search is a macOS search window for DJPoolRecords, RVRemix, and
+DJFolders. It combines the providers, previews media, and downloads files
+through the existing metadata-cleanup workflow.
 
 ## One-time installation
 
@@ -34,7 +34,27 @@ The launcher closes its own Terminal tab after the search window exits normally;
 it leaves the tab open when startup fails so the error remains available.
 
 DJPoolRecords may show its normal login or browser challenge the first time.
-RVRemix needs no saved login. Downloads go to `~/Downloads`.
+RVRemix needs no saved login. DJFolders requires its API key once, as described
+below. Downloads go to `~/Downloads`.
+
+## Enable DJFolders
+
+DJFolders uses the private API described by the companion `sync-search`
+project. Store its key in macOS Keychain so Spotlight and Automator launches can
+read it reliably:
+
+```zsh
+read -s 'DJFOLDERS_KEY?DJFolders API key: '
+echo
+security add-generic-password -U -s djfolders -a api-key -w "$DJFOLDERS_KEY"
+unset DJFOLDERS_KEY
+```
+
+Close and reopen DJ MetaSearch after adding the key. When the key is absent,
+searches continue with DJPoolRecords and RVRemix and the status area explicitly
+reports that DJFolders is unavailable. For a Terminal-only launch, the app also
+accepts `DJFOLDERS_API_KEY`; the integration guide's legacy
+`CRATE_SEARCH_API_KEY` and `crate-search` Keychain service remain supported.
 
 ## Update through Spotlight
 
@@ -127,6 +147,11 @@ Credentials may optionally come from `DJPOOL_USER` and `DJPOOL_PASS`, or from
 the macOS Keychain service `djpoolrecords` with accounts named `username` and
 `password`. Otherwise, use the visible interactive login.
 
+The DJFolders API key is read from `DJFOLDERS_API_KEY` or the macOS Keychain
+service `djfolders`, account `api-key`. It stays out of the repository. Search
+results contain no key; signed stream and download URLs are requested only when
+their corresponding result is activated.
+
 ## Developer setup
 
 The dependency manifest is `requirements.txt`; Python 3.9+ is required.
@@ -159,11 +184,13 @@ only from `main`; keep unfinished work on another branch.
 
 ## What the application does
 
-- Queries DJPoolRecords through its authenticated audio-search endpoint and
-  RVRemix through its public LetsBox search widget.
+- Queries DJPoolRecords through its authenticated audio-search endpoint,
+  RVRemix through its public LetsBox widget, and DJFolders through its private
+  audio-search API.
 - Converts `Artist - Title` to a focused RVRemix query and filters irrelevant or
   duplicate results locally.
-- Loads DJPoolRecords pages progressively while RVRemix runs in the background.
+- Loads DJPoolRecords pages progressively while RVRemix and DJFolders run in
+  the background.
 - Labels and priority-sorts merged results, previews media through a temporary
   session cache, and manages downloads without navigating away from the app.
 - Cleans supported MP3/M4A tags and filenames. If cleanup fails, it preserves the

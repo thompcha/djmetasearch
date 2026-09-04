@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 from pathlib import Path
 
@@ -6,14 +8,19 @@ import pytest
 from djmetasearch.results import (
     filter_djpool_model,
     is_labeled_vanilla_version,
+    is_tmu_named_version,
     is_vanilla_version,
     merge_result_models,
     parse_rvremix_payload,
     parse_search_payload,
     parsed_size_bytes,
+    preferred_label_key,
+    priority_rank,
     result_meets_minimum_size,
     safe_preview_url,
     safe_remote_url,
+    sort_results,
+    split_trailing_bpm,
     version_family_key,
 )
 
@@ -60,8 +67,11 @@ def test_parses_rest_audio_search_hits() -> None:
         "results": [{
             "id": "djpool-rest-0",
             "name": "Post Malone - Congratulations (Intro)",
+            "display_name": "Post Malone - Congratulations (Intro)",
+            "bpm": None,
             "filename": "Post Malone - Congratulations (Intro).mp3",
             "size": "10 MB",
+            "size_bytes": 10 * 1024 * 1024,
             "kind": "audio",
             "mime_type": "audio/mpeg",
             "preview_url": stream,
@@ -120,6 +130,26 @@ def test_size_parser_handles_provider_units() -> None:
     assert parsed_size_bytes("512 KB") == 512 * 1024
     assert parsed_size_bytes("1.5 MB") == 1.5 * 1024 * 1024
     assert parsed_size_bytes("2 GB") == 2 * 1024**3
+
+
+@pytest.mark.parametrize(
+    ("name", "display_name", "bpm"),
+    [
+        ("Artist - Song 128", "Artist - Song", 128),
+        ("Artist - Song 126 126", "Artist - Song", 126),
+        ("Artist - Song 90 BPM", "Artist - Song", 90),
+        ("Artist - Song (Clean - 128bpm)", "Artist - Song (Clean)", 128),
+        ("Artist - Song 124.mp3", "Artist - Song.mp3", 124),
+        ("Artist - Song 2024", "Artist - Song 2024", None),
+        ("Artist - Song", "Artist - Song", None),
+    ],
+)
+def test_splits_only_plausible_terminal_bpm(
+    name: str,
+    display_name: str,
+    bpm: int | None,
+) -> None:
+    assert split_trailing_bpm(name) == (display_name, bpm)
 
 
 def test_rest_audio_search_omits_sub_megabyte_hits() -> None:
@@ -242,7 +272,16 @@ def test_allows_only_rvremix_audio_stream_actions() -> None:
     assert safe_preview_url("https://evil.example/wp-admin/admin-ajax.php?action=letsbox-stream&id=123") == ""
 
 
-def test_priority_terms_move_to_top_in_configured_order_stably() -> None:
+def test_allows_only_keyed_crate_search_media_actions() -> None:
+    stream = "https://pod.djpanaflex.com/crate-search/?action=stream&id=123&key=secret"
+    download = "https://pod.djpanaflex.com/crate-search/?action=download&id=123&key=secret"
+    assert safe_preview_url(stream) == stream
+    assert safe_preview_url(download) == download
+    assert safe_preview_url("https://pod.djpanaflex.com/crate-search/?action=resolve&id=123&key=secret") == ""
+    assert safe_preview_url("https://pod.djpanaflex.com/crate-search/?action=stream&id=123") == ""
+
+
+def test_priority_terms_promote_only_vanilla_results_in_configured_order() -> None:
     names = [
         "Ordinary Result",
         "Song - nick bike edit 1",
@@ -268,11 +307,8 @@ def test_priority_terms_move_to_top_in_configured_order_stably() -> None:
     )
     model = parse_search_payload({"filescount": len(names), "html": html})
     assert [item["name"] for item in model["results"]] == [
-        "Song - TMU Throwback",
         "Song - TMU Intro",
-        "Song - MMP Remix",
-        "Song - nick bike edit 1",
-        "Song - Nick Bike Edit 2",
+        "Song - TMU Throwback",
         "Song - Johnny Flores",
         "Song - Isaac Jordan",
         "Song - DJ Ugeezy",
@@ -284,11 +320,14 @@ def test_priority_terms_move_to_top_in_configured_order_stably() -> None:
         "Song - Dirty Intro 2",
         "Song - CK Intro",
         "Ordinary Result",
+        "Song - nick bike edit 1",
+        "Song - MMP Remix",
+        "Song - Nick Bike Edit 2",
         "Another Ordinary Result",
     ]
 
 
-def test_ck_is_a_contextual_label_not_a_global_priority() -> None:
+def test_ck_promotes_vanilla_only_and_named_edit_copies_stay_together() -> None:
     names = [
         "Artist - Song (Sickmix Intro)",
         "Artist - Song (CKOne Edit)",
@@ -305,7 +344,7 @@ def test_ck_is_a_contextual_label_not_a_global_priority() -> None:
     )
     model = parse_search_payload({"filescount": len(names), "html": html})
     ordered = [item["name"] for item in model["results"]]
-    assert ordered == [names[7], names[3], names[4], names[0], names[1], names[2], names[5], names[6]]
+    assert ordered == [names[3], names[7], names[4], names[0], names[1], names[2], names[5], names[6]]
     assert ordered.index(names[3]) < ordered.index(names[5])
     assert abs(ordered.index(names[5]) - ordered.index(names[6])) == 1
 
@@ -437,8 +476,8 @@ def test_vanilla_versions_follow_all_preferred_results_despite_list_numbers() ->
     model = parse_search_payload({"filescount": len(names), "html": html})
 
     assert [item["name"] for item in model["results"]] == [
-        names[6],
         names[2],
+        names[6],
         names[3],
         names[1],
         names[4],
@@ -495,6 +534,126 @@ def test_labeled_vanilla_precedes_plain_vanilla_then_intro_edits() -> None:
     assert is_labeled_vanilla_version(names[4])
     assert is_labeled_vanilla_version(names[5])
     assert not is_labeled_vanilla_version(names[1])
+
+
+def test_preferred_label_on_named_edit_groups_family_without_promoting_it() -> None:
+    names = [
+        "Artist - Song (Other Remix)",
+        "Artist - Song (Smassh Edit) (TMU)",
+        "Artist - Song TMU",
+        "Artist - Song (Intro Clean)",
+        "Artist - Song (Smassh Edit) (Clean)",
+        "Artist - Song",
+    ]
+    items = [
+        {"name": name, "filename": f"{index}.mp3", "size": "5 MB"}
+        for index, name in enumerate(names)
+    ]
+
+    sort_results(items)
+
+    assert [item["name"] for item in items] == [
+        names[2],
+        names[3],
+        names[5],
+        names[0],
+        names[1],
+        names[4],
+    ]
+    assert priority_rank(names[2]) == 0
+    assert priority_rank(names[1]) > priority_rank(names[5])
+
+
+def test_tmu_branded_intro_edit_remains_preferred_but_contextual_tmu_does_not() -> None:
+    tmu_edit = "Black Eyed Peas - My Humps (Tmu Intro Edit) (Dirty)"
+    same_tmu_edit = "Black Eyed Peas - My Humps (TMU Intro Edit) (Clean)"
+    contextual_tmu = "Black Eyed Peas - My Humps (Smassh Edit) (TMU)"
+    same_smassh = "Black Eyed Peas - My Humps (Smassh Edit) (Clean)"
+    vanilla = "Black Eyed Peas - My Humps (Clean)"
+    items = [
+        {"name": contextual_tmu, "filename": "1.mp3", "size": "5 MB"},
+        {"name": vanilla, "filename": "2.mp3", "size": "5 MB"},
+        {"name": tmu_edit, "filename": "3.mp3", "size": "5 MB"},
+        {"name": same_smassh, "filename": "4.mp3", "size": "5 MB"},
+        {"name": same_tmu_edit, "filename": "5.mp3", "size": "5 MB"},
+    ]
+
+    sort_results(items)
+
+    assert is_tmu_named_version(tmu_edit)
+    assert not is_tmu_named_version(contextual_tmu)
+    assert [item["name"] for item in items] == [
+        tmu_edit,
+        same_tmu_edit,
+        vanilla,
+        contextual_tmu,
+        same_smassh,
+    ]
+
+
+def test_tmu_version_with_versus_artist_is_not_promoted() -> None:
+    vanilla_tmu = "Black Eyed Peas - My Humps (Tmu Intro Edit)"
+    versus_tmu = "Black Eyed Peas Vs Mati Rivaday - My Humps (Tmu Short Edit)"
+
+    assert is_tmu_named_version(vanilla_tmu)
+    assert not is_tmu_named_version(versus_tmu)
+    assert priority_rank(vanilla_tmu) == 0
+    assert priority_rank(versus_tmu) > priority_rank("Black Eyed Peas - My Humps")
+
+
+def test_promoted_results_group_by_core_label_ignoring_delivery_suffix() -> None:
+    names = [
+        "Black Eyed Peas - My Humps (Ck Outro)",
+        "Black Eyed Peas - My Humps (Ck Intro - Squeaky Clean)",
+        "Black Eyed Peas - My Humps (Ck Intro - Dirty)",
+        "Black Eyed Peas - My Humps (Ck Intro - Clean)",
+    ]
+    items = [
+        {"name": name, "filename": f"{index}.mp3", "size": "5 MB"}
+        for index, name in enumerate(names)
+    ]
+
+    sort_results(items)
+
+    assert preferred_label_key(names[1]) == "ck intro"
+    assert preferred_label_key(names[2]) == "ck intro"
+    assert preferred_label_key(names[3]) == "ck intro"
+    assert [item["name"] for item in items] == [
+        names[1],
+        names[2],
+        names[3],
+        names[0],
+    ]
+
+
+def test_intro_outro_delivery_labels_precede_named_edits_and_remixes() -> None:
+    names = [
+        "De La Soul Ft Devin The Dude - Baby Phat (Dennis Blaze Daisy Age Edit) (Intro - Clean)",
+        "De La Soul - Baby Phat (Intro Outro) (Clean)",
+        "De La Soul - Baby Phat (Intro - Outro) (Dirty)",
+        "De La Soul - Baby Phat (Intro and Outro) (Clean)",
+        "De La Soul - Baby Phat (Intro to Outro) (Clean)",
+        "De La Soul - Baby Phat (Somebody Remix) (Intro Outro)",
+    ]
+    items = [
+        {"name": name, "filename": f"{index}.mp3", "size": "5 MB"}
+        for index, name in enumerate(names)
+    ]
+
+    sort_results(items)
+
+    assert [item["name"] for item in items] == [
+        names[1],
+        names[2],
+        names[3],
+        names[4],
+        names[0],
+        names[5],
+    ]
+    for name in names[1:5]:
+        assert is_labeled_vanilla_version(name)
+    assert not is_vanilla_version(names[0])
+    assert not is_vanilla_version(names[5])
 
 
 def test_merge_result_models_deduplicates_and_reapplies_priority_sort() -> None:
