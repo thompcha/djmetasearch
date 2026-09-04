@@ -28,9 +28,65 @@ RESULT_PRIORITY_TERMS = (
     "Intro",
 )
 INTRO_PRIORITY_RANK = RESULT_PRIORITY_TERMS.index("Intro")
+VANILLA_PRIORITY_RANK = INTRO_PRIORITY_RANK + 1
+INTRO_VARIANT_PRIORITY_RANK = VANILLA_PRIORITY_RANK + 1
+OTHER_PRIORITY_RANK = INTRO_VARIANT_PRIORITY_RANK + 1
 PARENTHETICAL = re.compile(r"\([^)]*\)|\[[^]]*\]")
 BARE_INTRO_WORDS = {"intro", "clean", "dirty"}
 MATCH_STOPWORDS = {"a", "an", "and", "at", "by", "for", "in", "of", "on", "the", "to", "with"}
+VERSION_COPY_QUALIFIERS = {
+    "break fill",
+    "clean",
+    "clean ck cut",
+    "ck cut",
+    "crate cuts",
+    "dirty",
+    "explicit",
+    "extended",
+    "hook first",
+    "instrumental",
+    "main",
+    "no outro",
+    "quickhitter",
+    "qh",
+    "se",
+}
+TRAILING_COPY_WORDS = {
+    "clean",
+    "dirty",
+    "explicit",
+    "ck",
+    "cut",
+    "main",
+    "extended",
+    "quickhitter",
+    "qh",
+    "se",
+}
+VERSION_KIND_WORDS = {
+    "bootleg",
+    "edit",
+    "flip",
+    "mashup",
+    "mix",
+    "redrum",
+    "refix",
+    "remix",
+    "revibe",
+    "rmx",
+}
+TITLE_MODIFIER_ALIASES = {
+    "trans": ("trans", "transition", "transitions"),
+}
+MINIMUM_RESULT_BYTES = 1024 * 1024
+SIZE_PATTERN = re.compile(r"^\s*([\d,.]+)\s*(bytes?|[kmgt]i?b)\s*$", flags=re.IGNORECASE)
+VANILLA_PARENTHETICALS = {
+    "clean",
+    "dirty",
+    "explicit",
+    "original",
+    "original mix",
+}
 
 
 def safe_remote_url(value: object) -> str:
@@ -75,6 +131,41 @@ def media_kind(filename: str, *, default: str = "other") -> str:
     return default
 
 
+def parsed_size_bytes(value: object) -> float | None:
+    """Parse provider display sizes, returning None when size is unavailable."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value) if value >= 0 else None
+    if not isinstance(value, str) or not value.strip():
+        return None
+    match = SIZE_PATTERN.fullmatch(value)
+    if not match:
+        return None
+    try:
+        amount = float(match.group(1).replace(",", ""))
+    except ValueError:
+        return None
+    unit = match.group(2).casefold()
+    exponent = {
+        "byte": 0,
+        "bytes": 0,
+        "kb": 1,
+        "kib": 1,
+        "mb": 2,
+        "mib": 2,
+        "gb": 3,
+        "gib": 3,
+        "tb": 4,
+        "tib": 4,
+    }.get(unit)
+    return amount * (1024**exponent) if exponent is not None else None
+
+
+def result_meets_minimum_size(item: dict[str, object]) -> bool:
+    """Keep unknown sizes, but reject known files smaller than one megabyte."""
+    size = parsed_size_bytes(item.get("size"))
+    return size is None or size >= MINIMUM_RESULT_BYTES
+
+
 def normalized_match_tokens(value: str, *, ignore_stopwords: bool = True) -> list[str]:
     """Create case, diacritic, and punctuation-insensitive relevance tokens."""
     decomposed = unicodedata.normalize("NFKD", value).casefold()
@@ -115,19 +206,94 @@ def artist_and_title(name: str) -> tuple[str, str]:
     return artist.strip(), title.strip()
 
 
+def clean_catalog_name(name: str) -> str:
+    """Remove an audio extension and provider/list track-number prefix."""
+    value = name.strip()
+    suffix = PurePosixPath(value).suffix.lower().lstrip(".")
+    if suffix in AUDIO_EXTENSIONS | VIDEO_EXTENSIONS:
+        value = value[: -(len(suffix) + 1)]
+    return re.sub(r"^\s*(?:\d{1,3}[_-]\d{1,3}\s*|\d{1,3}\s*[._-]\s*)", "", value)
+
+
+def is_vanilla_version(name: str) -> bool:
+    """Identify plain/original tracks and their Intro/Clean/Dirty copies."""
+    value = clean_catalog_name(name)
+    artist, separator, title = value.partition("-")
+    if not separator or not artist.strip() or not title.strip():
+        return False
+    artist_tokens = normalized_match_tokens(artist, ignore_stopwords=False)
+    if (
+        re.search(r"(?<!\w)vs\.?(?!\w)", artist, flags=re.IGNORECASE)
+        or (artist_tokens and artist_tokens[0] in {"acca", "acapella", "inst", "instrumental"})
+        # Long concatenated artist strings are generally mashup source lists,
+        # even when the filename only labels the file itself as Clean.
+        or len(artist_tokens) > 5
+    ):
+        return False
+
+    for match in PARENTHETICAL.finditer(title):
+        tokens = normalized_match_tokens(match.group(0), ignore_stopwords=False)
+        normalized = " ".join(tokens)
+        if normalized in VANILLA_PARENTHETICALS:
+            continue
+        if tokens and all(
+            token in {"bpm", "ck", "clean", "cut", "dirty", "explicit", "intro"} or token.isdigit()
+            for token in tokens
+        ):
+            continue
+        return False
+
+    unwrapped_title = PARENTHETICAL.sub(" ", title)
+    tokens = normalized_match_tokens(unwrapped_title, ignore_stopwords=False)
+    while tokens and (
+        tokens[-1] in {"bpm", "ck", "clean", "cut", "dirty", "explicit", "intro"}
+        or re.fullmatch(r"\d{2,3}", tokens[-1])
+    ):
+        tokens.pop()
+    variant_words = VERSION_KIND_WORDS | {
+        "acca",
+        "acapella",
+        "edits",
+        "inst",
+        "instrumental",
+        "outro",
+        "se",
+        "segue",
+        "short",
+        "sickmix",
+        "trans",
+        "transition",
+        "transitions",
+    }
+    return bool(tokens) and not any(token in variant_words for token in tokens)
+
+
+def is_labeled_vanilla_version(name: str) -> bool:
+    """Return true for vanilla copies labelled Intro/Clean/Dirty/CK."""
+    if not is_vanilla_version(name):
+        return False
+    _artist, title = artist_and_title(clean_catalog_name(name))
+    return re.search(r"(?<!\w)(?:intro|clean|dirty|ck)(?!\w)", title, flags=re.IGNORECASE) is not None
+
+
 def priority_rank(name: str) -> int:
     normalized_name = name.casefold()
     for rank, term in enumerate(RESULT_PRIORITY_TERMS[:-1]):
         if term == "CK":
-            matches = re.search(r"(?<!\w)ck(?!\w)", normalized_name) is not None
-        else:
-            matches = term.casefold() in normalized_name
+            # CK is a delivery/cut label. It affects vanilla labelling and
+            # stays with a named edit family, but is not itself a global rank.
+            continue
+        matches = term.casefold() in normalized_name
         if matches:
             return rank
     _artist, title = artist_and_title(name)
-    if "intro" in title.casefold():
+    if is_labeled_vanilla_version(name):
         return INTRO_PRIORITY_RANK
-    return len(RESULT_PRIORITY_TERMS)
+    if is_vanilla_version(name):
+        return VANILLA_PRIORITY_RANK
+    if re.search(r"(?<!\w)intro(?!\w)", title, flags=re.IGNORECASE):
+        return INTRO_VARIANT_PRIORITY_RANK
+    return OTHER_PRIORITY_RANK
 
 
 def bare_intro_rank(title: str) -> int:
@@ -145,6 +311,43 @@ def bare_intro_rank(title: str) -> int:
                 return 1
             break
     return 0
+
+
+def version_family_key(name: str) -> str:
+    """Collapse delivery variants while retaining the named edit/remix identity."""
+    value = clean_catalog_name(name)
+
+    # Prefer a named version label over the complete filename. Providers often
+    # vary the artist/title around the same version (for example "Dance" vs
+    # "Dance With Me"), while the label is the useful grouping identity.
+    for match in PARENTHETICAL.finditer(value):
+        label_tokens = normalized_match_tokens(match.group(0))
+        label_tokens = ["remix" if token == "rmx" else token for token in label_tokens]
+        if len(label_tokens) >= 2 and any(token in VERSION_KIND_WORDS for token in label_tokens):
+            # "OG To X Remix" describes a transition from the original into X,
+            # not a different remix credited to "OG".
+            if label_tokens[0] == "og" and len(label_tokens) >= 3:
+                label_tokens.pop(0)
+            return "version:" + " ".join(label_tokens)
+
+    def remove_copy_qualifier(match: re.Match[str]) -> str:
+        tokens = normalized_match_tokens(match.group(0), ignore_stopwords=False)
+        normalized = " ".join(tokens)
+        if normalized in VERSION_COPY_QUALIFIERS:
+            return " "
+        if tokens and all(token.isdigit() or token == "bpm" for token in tokens):
+            return " "
+        return match.group(0)
+
+    value = PARENTHETICAL.sub(remove_copy_qualifier, value)
+    # Connector words are immaterial here too, making "&" and "and" copies
+    # converge without weakening the search relevance gate.
+    tokens = normalized_match_tokens(value)
+    # Remove filename delivery labels and one or more trailing BPM values. The
+    # meaningful label (for example "Smassh Edit") deliberately remains.
+    while tokens and (tokens[-1] in TRAILING_COPY_WORDS or re.fullmatch(r"\d{2,3}", tokens[-1])):
+        tokens.pop()
+    return " ".join(tokens)
 
 
 def sort_results(results: list[dict[str, object]]) -> None:
@@ -169,6 +372,25 @@ def sort_results(results: list[dict[str, object]]) -> None:
 
     results.sort(key=sort_key)
 
+    # Keep the site's order between version families, but make every family a
+    # contiguous block. Because priority sorting has already run, a family
+    # containing TMU or another named favorite is grouped at that favored
+    # result's position. Contextual labels such as CK do not promote a family.
+    families: dict[str, list[dict[str, object]]] = {}
+    family_order: list[str] = []
+    for item in results:
+        key = version_family_key(str(item["name"]))
+        # Named edits/remixes may span priority labels (for example one Smassh
+        # copy carrying CK), but a plain CK Cut must not pull vanilla copies up
+        # into the preferred tier ahead of the other preferred results.
+        if not key.startswith("version:"):
+            key = f"rank:{priority_rank(str(item['name']))}:{key}"
+        if key not in families:
+            families[key] = []
+            family_order.append(key)
+        families[key].append(item)
+    results[:] = [item for key in family_order for item in families[key]]
+
 
 def merge_result_models(models: object, *, later_title_term: str = "") -> dict[str, object]:
     """Merge parsed result models without duplicating the same remote media item."""
@@ -177,8 +399,15 @@ def merge_result_models(models: object, *, later_title_term: str = "") -> dict[s
     merged: list[dict[str, object]] = []
     seen: set[tuple[str, ...]] = set()
     normalized_later_term = later_title_term.casefold().strip()
+    accepted_later_terms = TITLE_MODIFIER_ALIASES.get(
+        normalized_later_term,
+        (normalized_later_term,),
+    )
     later_title_pattern = (
-        re.compile(rf"(?<!\w){re.escape(normalized_later_term)}(?!\w)", flags=re.IGNORECASE)
+        re.compile(
+            rf"(?<!\w)(?:{'|'.join(re.escape(term) for term in accepted_later_terms)})(?!\w)",
+            flags=re.IGNORECASE,
+        )
         if normalized_later_term
         else None
     )
@@ -188,6 +417,8 @@ def merge_result_models(models: object, *, later_title_term: str = "") -> dict[s
         for item in model["results"]:
             if not isinstance(item, dict):
                 raise ValueError("A merged search result item was invalid.")
+            if not result_meets_minimum_size(item):
+                continue
             if model_index and later_title_pattern:
                 _artist, title = artist_and_title(str(item.get("name") or ""))
                 if not later_title_pattern.search(title):
@@ -249,6 +480,9 @@ def parse_search_payload(payload: object) -> dict[str, object]:
         if download_node is not None:
             download_name = str(download_node.get("download") or download_node.get("data-name") or "")
         display_name = download_name or name
+        size = size_node.get_text(" ", strip=True) if size_node else ""
+        if not result_meets_minimum_size({"size": size}):
+            continue
         preview_value = inline_player.get("data-src") if inline_player else None
         if not preview_value and preview_node is not None:
             preview_value = preview_node.get("href")
@@ -261,7 +495,7 @@ def parse_search_payload(payload: object) -> dict[str, object]:
                 "id": str(entry.get("data-id") or f"result-{index}"),
                 "name": name or display_name or "Unnamed result",
                 "filename": display_name or name or "download.bin",
-                "size": size_node.get_text(" ", strip=True) if size_node else "",
+                "size": size,
                 # The captured module is audio-only, but its returned download
                 # names frequently omit .mp3/.m4a. Default those actionable
                 # extensionless rows to audio instead of suppressing Preview.
@@ -304,6 +538,8 @@ def parse_rest_search_payload(payload: dict[str, object]) -> dict[str, object]:
         if not name or kind != "audio":
             continue
         size = str(hit.get("size") or "").strip()
+        if not result_meets_minimum_size({"size": size}):
+            continue
         track_key = (
             " ".join(name.casefold().split()),
             " ".join(size.casefold().split()),
@@ -357,14 +593,17 @@ def parse_rvremix_payload(payload: object) -> dict[str, object]:
         stream_url = safe_preview_url(player.get("data-src"))
         if not stream_url:
             continue
-        seen_filenames.add(filename_key)
         size_node = entry.select_one(".entry-info-size")
+        size = size_node.get_text(" ", strip=True) if size_node else ""
+        if not result_meets_minimum_size({"size": size}):
+            continue
+        seen_filenames.add(filename_key)
         results.append(
             {
                 "id": f"rvremix-{entry.get('data-id') or index}",
                 "name": name or filename or "Unnamed result",
                 "filename": filename or name or "download.mp3",
-                "size": size_node.get_text(" ", strip=True) if size_node else "",
+                "size": size,
                 "kind": "audio",
                 "mime_type": declared_type or "audio/mpeg",
                 "preview_url": stream_url,
