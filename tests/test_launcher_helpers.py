@@ -5,6 +5,7 @@ from playwright.sync_api import Error as PlaywrightError, sync_playwright
 
 import standalone_app
 from standalone_app import (
+    configure_djfolders_api_key,
     page_has_audio_module,
     page_is_logged_out,
     evaluate_open_page,
@@ -144,6 +145,31 @@ def test_djfolders_key_prefers_environment_then_keychain(monkeypatch) -> None:
 
     monkeypatch.delenv("DJFOLDERS_API_KEY")
     assert resolve_crate_api_key() == "keychain-key"
+
+
+def test_first_launch_djfolders_setup_retries_then_saves_valid_key(monkeypatch) -> None:
+    entered = iter(["wrong-key", "shared-key"])
+    saved: list[str] = []
+
+    class Client:
+        def __init__(self, api_key: str) -> None:
+            self.api_key = api_key
+
+        def health(self) -> dict[str, object]:
+            if self.api_key == "wrong-key":
+                raise RuntimeError("unauthorized")
+            return {"ok": True}
+
+    monkeypatch.setattr(standalone_app, "prompt_for_djfolders_api_key", lambda _message="": next(entered))
+    monkeypatch.setattr(standalone_app, "CrateSearchClient", Client)
+    monkeypatch.setattr(
+        standalone_app,
+        "save_djfolders_api_key",
+        lambda key: saved.append(key) or True,
+    )
+
+    assert configure_djfolders_api_key() == "shared-key"
+    assert saved == ["shared-key"]
 
 
 def test_djpool_search_encodes_spaces_as_percent_20() -> None:

@@ -40,19 +40,24 @@ below. Downloads go to `~/Downloads`.
 ## Enable DJFolders
 
 DJFolders uses the private API described by the companion `sync-search`
-project. Store its key in macOS Keychain so Spotlight and Automator launches can
-read it reliably:
+project. On the first launch without a saved key, DJ MetaSearch opens a secure
+macOS dialog. Paste the shared key and click **Save Key**. The app verifies it
+before saving it in Keychain; no Terminal work is required.
+
+To share your existing key, copy it to the clipboard without displaying it:
 
 ```zsh
-read -s 'DJFOLDERS_KEY?DJFolders API key: '
-echo
-security add-generic-password -U -s djfolders -a api-key -w "$DJFOLDERS_KEY"
-unset DJFOLDERS_KEY
+security find-generic-password -s djfolders -a api-key -w | pbcopy
 ```
 
-Close and reopen DJ MetaSearch after adding the key. When the key is absent,
-searches continue with DJPoolRecords and RVRemix and the status area explicitly
-reports that DJFolders is unavailable. For a Terminal-only launch, the app also
+Send the clipboard contents to your friend through a private channel. They only
+need to copy it, launch DJ MetaSearch, paste it into the automatic prompt, and
+click **Save Key**. Anyone who receives the key can access DJFolders, so do not
+post it publicly; rotating the server key revokes shared copies.
+
+If the setup dialog is dismissed, searches continue with DJPoolRecords and
+RVRemix and the status area explicitly reports that DJFolders is unavailable.
+The dialog returns on the next launch. For a Terminal-only launch, the app also
 accepts `DJFOLDERS_API_KEY`; the integration guide's legacy
 `CRATE_SEARCH_API_KEY` and `crate-search` Keychain service remain supported.
 

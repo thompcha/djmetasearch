@@ -181,6 +181,86 @@ def resolve_crate_api_key() -> str:
     )
 
 
+def prompt_for_djfolders_api_key(message: str = "") -> str:
+    """Collect a shared key through a hidden native field, never through logs or argv."""
+    if sys.platform != "darwin":
+        return ""
+    prompt = message or (
+        "DJFolders needs the API key shared with you. Paste it below; "
+        "DJ MetaSearch will verify it and save it securely in macOS Keychain."
+    )
+    script = """
+with timeout of 600 seconds
+  activate
+  set promptResult to display dialog %s default answer "" with hidden answer ¬
+    buttons {"Not Now", "Save Key"} default button "Save Key" cancel button "Not Now" ¬
+    with title "DJ MetaSearch — Enable DJFolders" giving up after 590
+  if gave up of promptResult then return ""
+  return text returned of promptResult
+end timeout
+""" % json.dumps(prompt)
+    try:
+        result = subprocess.run(
+            ["/usr/bin/osascript", "-e", script],
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return result.stdout.rstrip("\r\n") if result.returncode == 0 else ""
+
+
+def save_djfolders_api_key(api_key: str) -> bool:
+    """Store a validated key under the service name used by Spotlight launches."""
+    if sys.platform != "darwin" or not api_key:
+        return False
+    try:
+        result = subprocess.run(
+            [
+                "/usr/bin/security",
+                "add-generic-password",
+                "-U",
+                "-s",
+                DJFOLDERS_KEYCHAIN_SERVICE,
+                "-a",
+                "api-key",
+                "-w",
+                api_key,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
+
+
+def configure_djfolders_api_key() -> str:
+    """Guide a first-time user through paste, validation, and Keychain storage."""
+    message = ""
+    for _attempt in range(3):
+        api_key = prompt_for_djfolders_api_key(message)
+        if not api_key:
+            return ""
+        try:
+            CrateSearchClient(api_key).health()
+        except Exception:
+            message = (
+                "That key was not accepted by DJFolders. Copy the complete key again, "
+                "paste it below, and click Save Key."
+            )
+            continue
+        if save_djfolders_api_key(api_key):
+            return api_key
+        message = (
+            "The key worked, but macOS could not save it in Keychain. "
+            "Please try once more."
+        )
+    return ""
+
+
 def page_has_audio_module(page: Page) -> bool:
     try:
         return page.locator(AUDIO_SELECTOR).count() > 0
@@ -561,7 +641,7 @@ def run() -> int:
     preview_cache_dir = staging_dir / "previews"
     rvremix = RVRemixClient()
     rvremix_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="rvremix-search")
-    crate_api_key = resolve_crate_api_key()
+    crate_api_key = resolve_crate_api_key() or configure_djfolders_api_key()
     crate_search = CrateSearchClient(crate_api_key) if crate_api_key else None
     crate_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="crate-search")
     try:

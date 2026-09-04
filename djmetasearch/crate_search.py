@@ -162,6 +162,13 @@ class CrateSearchClient:
         sort_results(filtered["results"])
         return filtered
 
+    def health(self) -> dict[str, object]:
+        """Verify that the configured credential reaches the DJFolders service."""
+        payload = self._request_json({"health": 1})
+        if payload.get("ok") is not True:
+            raise RuntimeError("DJFolders did not accept the API key.")
+        return payload
+
     def resolve(self, track_id: str) -> dict[str, object]:
         safe_id = str(track_id or "")
         if not safe_id:

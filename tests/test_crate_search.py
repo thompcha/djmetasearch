@@ -90,3 +90,17 @@ def test_formats_exact_byte_sizes_for_display() -> None:
     assert formatted_size(512) == "512 B"
     assert formatted_size(1536) == "1.5 KB"
     assert formatted_size(5 * 1024 * 1024) == "5 MB"
+
+
+def test_health_requires_positive_service_response(monkeypatch) -> None:
+    client = CrateSearchClient("secret")
+    monkeypatch.setattr(client, "_request_json", lambda _parameters: {"ok": True, "tracks": 10})
+    assert client.health()["tracks"] == 10
+
+    monkeypatch.setattr(client, "_request_json", lambda _parameters: {"ok": False})
+    try:
+        client.health()
+    except RuntimeError as error:
+        assert "did not accept" in str(error)
+    else:
+        raise AssertionError("An unhealthy response must reject the key")
