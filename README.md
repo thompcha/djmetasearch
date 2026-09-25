@@ -34,32 +34,8 @@ The launcher closes its own Terminal tab after the search window exits normally;
 it leaves the tab open when startup fails so the error remains available.
 
 DJPoolRecords may show its normal login or browser challenge the first time.
-RVRemix needs no saved login. DJFolders requires its API key once, as described
-below. Downloads go to `~/Downloads`.
-
-## Enable DJFolders
-
-DJFolders uses the private API described by the companion `sync-search`
-project. On the first launch without a saved key, DJ MetaSearch opens a secure
-macOS dialog. Paste the shared key and click **Save Key**. The app verifies it
-before saving it in Keychain; no Terminal work is required.
-
-To share your existing key, copy it to the clipboard without displaying it:
-
-```zsh
-security find-generic-password -s djfolders -a api-key -w | pbcopy
-```
-
-Send the clipboard contents to your friend through a private channel. They only
-need to copy it, launch DJ MetaSearch, paste it into the automatic prompt, and
-click **Save Key**. Anyone who receives the key can access DJFolders, so do not
-post it publicly; rotating the server key revokes shared copies.
-
-If the setup dialog is dismissed, searches continue with DJPoolRecords and
-RVRemix and the status area explicitly reports that DJFolders is unavailable.
-The dialog returns on the next launch. For a Terminal-only launch, the app also
-accepts `DJFOLDERS_API_KEY`; the integration guide's legacy
-`CRATE_SEARCH_API_KEY` and `crate-search` Keychain service remain supported.
+RVRemix and DJFolders need no saved login or API key. Downloads go to
+`~/Downloads`.
 
 ## Update through Spotlight
 
@@ -152,10 +128,8 @@ Credentials may optionally come from `DJPOOL_USER` and `DJPOOL_PASS`, or from
 the macOS Keychain service `djpoolrecords` with accounts named `username` and
 `password`. Otherwise, use the visible interactive login.
 
-The DJFolders API key is read from `DJFOLDERS_API_KEY` or the macOS Keychain
-service `djfolders`, account `api-key`. It stays out of the repository. Search
-results contain no key; signed stream and download URLs are requested only when
-their corresponding result is activated.
+DJFolders uses a public HTTPS endpoint and needs no local credential. Stream and
+download URLs are requested only when their corresponding result is activated.
 
 ## Developer setup
 

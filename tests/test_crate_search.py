@@ -4,7 +4,7 @@ from djmetasearch.crate_search import CrateSearchClient, formatted_size, safe_me
 
 
 def test_search_maps_audio_pages_filters_filename_matches_and_small_files(monkeypatch) -> None:
-    client = CrateSearchClient("secret")
+    client = CrateSearchClient()
     requests: list[dict[str, object]] = []
     pages = [
         {
@@ -61,7 +61,7 @@ def test_search_maps_audio_pages_filters_filename_matches_and_small_files(monkey
 
 
 def test_resolve_returns_constrained_direct_media_urls(monkeypatch) -> None:
-    client = CrateSearchClient("secret key")
+    client = CrateSearchClient()
     monkeypatch.setattr(client, "_request_json", lambda _parameters: {
         "id": "123",
         "mimeType": "audio/mpeg",
@@ -73,16 +73,16 @@ def test_resolve_returns_constrained_direct_media_urls(monkeypatch) -> None:
 
     assert resolved["direct_stream"] is True
     assert resolved["preview_url"].startswith("https://pod.djpanaflex.com/crate-search/?action=stream&id=123")
-    assert "key=secret+key" in resolved["preview_url"]
+    assert "key=" not in resolved["preview_url"]
     assert "action=download" in resolved["download_url"]
 
 
 def test_rejects_cross_origin_or_wrong_track_media_reference() -> None:
     assert safe_media_reference(
-        "https://evil.example/?action=stream&id=123", action="stream", track_id="123", api_key="key"
+        "https://evil.example/?action=stream&id=123", action="stream", track_id="123"
     ) == ""
     assert safe_media_reference(
-        "?action=stream&id=other", action="stream", track_id="123", api_key="key"
+        "?action=stream&id=other", action="stream", track_id="123"
     ) == ""
 
 
@@ -93,7 +93,7 @@ def test_formats_exact_byte_sizes_for_display() -> None:
 
 
 def test_health_requires_positive_service_response(monkeypatch) -> None:
-    client = CrateSearchClient("secret")
+    client = CrateSearchClient()
     monkeypatch.setattr(client, "_request_json", lambda _parameters: {"ok": True, "tracks": 10})
     assert client.health()["tracks"] == 10
 
@@ -101,6 +101,6 @@ def test_health_requires_positive_service_response(monkeypatch) -> None:
     try:
         client.health()
     except RuntimeError as error:
-        assert "did not accept" in str(error)
+        assert "health check failed" in str(error)
     else:
-        raise AssertionError("An unhealthy response must reject the key")
+        raise AssertionError("An unhealthy response must fail the health check")

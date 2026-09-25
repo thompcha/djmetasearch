@@ -325,8 +325,8 @@ def test_crate_search_arrives_asynchronously_and_resolves_only_on_action() -> No
             "provider": "DJFolders",
         }],
     }
-    stream_url = "https://pod.djpanaflex.com/crate-search/?action=stream&id=6080796180102&key=fixture"
-    download_url = "https://pod.djpanaflex.com/crate-search/?action=download&id=6080796180102&key=fixture"
+    stream_url = "https://pod.djpanaflex.com/crate-search/?action=stream&id=6080796180102"
+    download_url = "https://pod.djpanaflex.com/crate-search/?action=download&id=6080796180102"
     resolves: list[str] = []
     remote_downloads: list[dict[str, object]] = []
 
@@ -398,7 +398,7 @@ def test_crate_search_arrives_asynchronously_and_resolves_only_on_action() -> No
         browser.close()
 
 
-def test_missing_djfolders_key_is_reported_instead_of_silently_omitted() -> None:
+def test_disabled_djfolders_provider_is_reported_instead_of_silently_omitted() -> None:
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=True)
         page = browser.new_page()
@@ -418,14 +418,14 @@ def test_missing_djfolders_key_is_reported_instead_of_silently_omitted() -> None
             "([cache, query, options]) => window.djpool.start(cache, query, options)",
             [TEMPLATE, "de la soul", {
                 "djfolders": False,
-                "djfoldersReason": "API key not configured",
+                "djfoldersReason": "service disabled",
             }],
         )
         page.wait_for_function(
             "() => document.querySelector('#status').textContent.includes('DJFolders unavailable')"
         )
         assert page.locator("#status").inner_text() == (
-            "DJFolders unavailable: API key not configured"
+            "DJFolders unavailable: service disabled"
         )
         browser.close()
 

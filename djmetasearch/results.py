@@ -139,7 +139,7 @@ def safe_remote_url(value: object) -> str:
 
 
 def safe_preview_url(value: object) -> str:
-    """Allow known provider preview actions and signed Dropbox media streams."""
+    """Allow known provider preview actions and controlled media streams."""
     local_action = safe_remote_url(value)
     if local_action:
         return local_action
@@ -163,8 +163,6 @@ def safe_preview_url(value: object) -> str:
             parameters.get("action") in (["stream"], ["download"])
             and len(parameters.get("id", [])) == 1
             and bool(parameters["id"][0])
-            and len(parameters.get("key", [])) == 1
-            and bool(parameters["key"][0])
         ):
             return value
     return ""

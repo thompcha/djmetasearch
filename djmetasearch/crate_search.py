@@ -1,4 +1,4 @@
-"""Private-key client for the Sync.com-backed DJFolders provider."""
+"""Client for the Sync.com-backed DJFolders provider."""
 
 from __future__ import annotations
 
@@ -41,8 +41,8 @@ def formatted_size(size: int) -> str:
     return f"{size} B"
 
 
-def safe_media_reference(reference: object, *, action: str, track_id: str, api_key: str) -> str:
-    """Resolve and constrain a service media reference, adding the private key."""
+def safe_media_reference(reference: object, *, action: str, track_id: str) -> str:
+    """Resolve and constrain a service media reference to the public endpoint."""
     if not isinstance(reference, str) or action not in {"stream", "download"}:
         return ""
     absolute = urllib.parse.urljoin(BASE_URL, reference)
@@ -56,16 +56,14 @@ def safe_media_reference(reference: object, *, action: str, track_id: str, api_k
         or parameters.get("id") != [track_id]
     ):
         return ""
-    parameters["key"] = [api_key]
+    # Strip obsolete credentials from responses produced during a rolling deploy.
+    parameters.pop("key", None)
     query = urllib.parse.urlencode([(key, value) for key, values in parameters.items() for value in values])
     return urllib.parse.urlunsplit(("https", CRATE_SEARCH_HOST, CRATE_SEARCH_PATH, query, ""))
 
 
 class CrateSearchClient:
-    def __init__(self, api_key: str, base_url: str = BASE_URL, timeout: float = 25.0) -> None:
-        if not api_key:
-            raise ValueError("DJFolders API key is missing.")
-        self.api_key = api_key
+    def __init__(self, base_url: str = BASE_URL, timeout: float = 25.0) -> None:
         self.base_url = base_url
         self.timeout = timeout
         self.opener = urllib.request.build_opener()
@@ -80,7 +78,6 @@ class CrateSearchClient:
                 headers={
                     "Accept": "application/json",
                     "User-Agent": USER_AGENT,
-                    "X-API-Key": self.api_key,
                 },
             )
             try:
@@ -163,10 +160,10 @@ class CrateSearchClient:
         return filtered
 
     def health(self) -> dict[str, object]:
-        """Verify that the configured credential reaches the DJFolders service."""
+        """Verify that the public DJFolders service is available."""
         payload = self._request_json({"health": 1})
         if payload.get("ok") is not True:
-            raise RuntimeError("DJFolders did not accept the API key.")
+            raise RuntimeError("DJFolders health check failed.")
         return payload
 
     def resolve(self, track_id: str) -> dict[str, object]:
@@ -176,12 +173,8 @@ class CrateSearchClient:
         payload = self._request_json({"action": "resolve", "id": safe_id})
         if str(payload.get("id") or "") != safe_id:
             raise RuntimeError("DJFolders resolved a different track.")
-        stream_url = safe_media_reference(
-            payload.get("stream"), action="stream", track_id=safe_id, api_key=self.api_key
-        )
-        download_url = safe_media_reference(
-            payload.get("download"), action="download", track_id=safe_id, api_key=self.api_key
-        )
+        stream_url = safe_media_reference(payload.get("stream"), action="stream", track_id=safe_id)
+        download_url = safe_media_reference(payload.get("download"), action="download", track_id=safe_id)
         if not stream_url or not download_url:
             raise RuntimeError("DJFolders returned unsafe media references.")
         return {

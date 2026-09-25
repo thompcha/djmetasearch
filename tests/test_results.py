@@ -272,13 +272,13 @@ def test_allows_only_rvremix_audio_stream_actions() -> None:
     assert safe_preview_url("https://evil.example/wp-admin/admin-ajax.php?action=letsbox-stream&id=123") == ""
 
 
-def test_allows_only_keyed_crate_search_media_actions() -> None:
-    stream = "https://pod.djpanaflex.com/crate-search/?action=stream&id=123&key=secret"
-    download = "https://pod.djpanaflex.com/crate-search/?action=download&id=123&key=secret"
+def test_allows_only_public_crate_search_media_actions() -> None:
+    stream = "https://pod.djpanaflex.com/crate-search/?action=stream&id=123"
+    download = "https://pod.djpanaflex.com/crate-search/?action=download&id=123"
     assert safe_preview_url(stream) == stream
     assert safe_preview_url(download) == download
-    assert safe_preview_url("https://pod.djpanaflex.com/crate-search/?action=resolve&id=123&key=secret") == ""
-    assert safe_preview_url("https://pod.djpanaflex.com/crate-search/?action=stream&id=123") == ""
+    assert safe_preview_url("https://pod.djpanaflex.com/crate-search/?action=resolve&id=123") == ""
+    assert safe_preview_url("https://pod.djpanaflex.com/crate-search/?action=stream") == ""
 
 
 def test_priority_terms_promote_only_vanilla_results_in_configured_order() -> None:
