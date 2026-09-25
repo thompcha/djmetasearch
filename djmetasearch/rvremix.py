@@ -145,6 +145,16 @@ class RVRemixClient:
                 with self._request(template["url"], urllib.parse.urlencode(form).encode()) as response:
                     payload = json.load(response)
                 return filter_rvremix_model(parse_rvremix_payload(payload), query)
+            except urllib.error.HTTPError as exc:
+                if exc.code == 401:
+                    # RVRemix currently rejects its own logged-out LetsBox widgets.
+                    # Treat that temporary provider condition as no results instead
+                    # of surfacing an error on every combined search.
+                    return {"count": 0, "results": []}
+                last_error = exc
+                self.template = None
+                if attempt == 0:
+                    continue
             except Exception as exc:
                 last_error = exc
                 self.template = None

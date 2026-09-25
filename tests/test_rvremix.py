@@ -1,9 +1,24 @@
+import urllib.error
+
 from djmetasearch.rvremix import (
+    RVRemixClient,
     filter_rvremix_model,
     normalized_tokens,
     quoted_rvremix_query,
     rvremix_query_groups,
 )
+
+
+def test_unauthorized_widget_search_is_silently_treated_as_no_results(monkeypatch) -> None:
+    client = RVRemixClient()
+    client.template = {"url": "https://rvremix.com/wp-admin/admin-ajax.php"}
+
+    def unauthorized(_url: str, _data=None):
+        raise urllib.error.HTTPError(_url, 401, "Unauthorized", {}, None)
+
+    monkeypatch.setattr(client, "_request", unauthorized)
+
+    assert client.search("Artist - Title") == {"count": 0, "results": []}
 
 
 def test_quotes_artist_and_title_separately() -> None:

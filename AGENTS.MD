@@ -1,0 +1,1 @@
+Never deploy, publish, redeploy, or create a hosted Site on chatgpt.site or any other hosting service unless I explicitly request deployment in that specific task. Building, editing, testing, previewing, or asking for a website does not authorize deployment. If a reviewable build is needed, save a version without deploying it.
