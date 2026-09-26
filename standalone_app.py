@@ -29,6 +29,7 @@ from djmetasearch.cache import load_cache, make_cache, save_cache, validate_cach
 from djmetasearch.crate_search import BASE_URL as CRATE_SEARCH_URL, CrateSearchClient
 from djmetasearch.query import default_query, resolve_query
 from djmetasearch.results import (
+    ALLOWED_HOST,
     CRATE_SEARCH_HOST,
     filter_djpool_model,
     merge_result_models,
@@ -655,21 +656,23 @@ def run() -> int:
                 )
                 return True
 
-            def queue_remote_download(_source: object, raw: str) -> bool:
+            def queue_remote_download(_source: object, raw: str) -> str:
                 request_data = json.loads(raw)
                 if not isinstance(request_data, dict):
                     raise ValueError("Remote download request was invalid.")
                 remote_url = safe_preview_url(request_data.get("url"))
                 parsed = urlsplit(remote_url)
-                allowed = parsed.hostname == "rvremix.com"
+                allowed = parsed.hostname in {ALLOWED_HOST, "rvremix.com"}
                 if parsed.hostname == CRATE_SEARCH_HOST:
                     allowed = parse_qs(parsed.query).get("action") == ["download"]
                 if not allowed:
                     raise ValueError("Remote download URL was missing or unsafe.")
+                request_id = uuid.uuid4().hex
+                request_data["request_id"] = request_id
                 request_data["url"] = remote_url
                 request_data["kind"] = "audio"
                 pending_remote_downloads.append(request_data)
-                return True
+                return request_id
 
             app_page.expose_binding("requestDJPoolSearch", queue_djpool_search)
             app_page.expose_binding("requestRVRemixSearch", queue_rvremix_search)
@@ -823,8 +826,12 @@ def run() -> int:
                     notification = pending_notifications.pop(0)
                     if not evaluate_open_page(
                         app_page,
-                        "([message, warning]) => window.djpool.downloadFinished(message, warning)",
-                        [notification["message"], notification["warning"]],
+                        "([message, warning, requestId]) => window.djpool.downloadFinished(message, warning, requestId)",
+                        [
+                            notification["message"],
+                            notification["warning"],
+                            notification.get("request_id", ""),
+                        ],
                     ):
                         break
                 if pending_cached_downloads:
@@ -851,6 +858,7 @@ def run() -> int:
                 if pending_remote_downloads:
                     remote_download = pending_remote_downloads.pop(0)
                     remote_url = str(remote_download["url"])
+                    download_request_id = str(remote_download.get("request_id") or "")
                     try:
                         token = cached_media_by_url.get(remote_url, "")
                         if not token or token not in media_cache:
@@ -871,11 +879,19 @@ def run() -> int:
                             print(message, file=sys.stderr)
                         else:
                             print(message)
-                        pending_notifications.append({"message": message, "warning": warning})
+                        pending_notifications.append({
+                            "message": message,
+                            "warning": warning,
+                            "request_id": download_request_id,
+                        })
                     except Exception as exc:
                         message = f"Download failed: {exc}"
                         print(message, file=sys.stderr)
-                        pending_notifications.append({"message": message, "warning": True})
+                        pending_notifications.append({
+                            "message": message,
+                            "warning": True,
+                            "request_id": download_request_id,
+                        })
                 if pending_previews:
                     preview_request = pending_previews.pop(0)
                     request_id = str(preview_request.get("request_id") or "")

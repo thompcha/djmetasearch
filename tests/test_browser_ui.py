@@ -42,11 +42,68 @@ def rest_payload(*names: str) -> dict[str, object]:
 PAYLOAD = rest_payload("Artist - Song", "Artist - Video", "Metadata only")
 
 
+def test_filters_loaded_results_without_requesting_providers_again() -> None:
+    djpool_queries: list[str] = []
+    rvremix_queries: list[str] = []
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.route(f"{APP_URL}*", lambda route: route.fulfill(status=200, content_type="text/html", body=UI))
+        page.expose_binding(
+            "requestDJPoolSearch",
+            lambda _source, query: djpool_queries.append(query) or parse_search_payload(PAYLOAD),
+        )
+        page.expose_binding(
+            "requestRVRemixSearch",
+            lambda _source, query: rvremix_queries.append(query) or {"count": 0, "results": []},
+        )
+        page.expose_binding(
+            "mergeResultModels",
+            lambda _source, raw: merge_result_models(
+                json.loads(raw)["models"],
+                later_title_term=json.loads(raw)["later_title_term"],
+            ),
+        )
+        page.expose_binding("requestBootstrap", lambda _source, query: True)
+        page.goto(APP_URL)
+        page.evaluate("([cache, query]) => window.djpool.start(cache, query)", [TEMPLATE, "Artist"])
+        page.wait_for_function("() => document.querySelectorAll('.result').length === 3")
+
+        page.locator("#result-filter").fill("vid")
+        page.wait_for_function("() => document.querySelectorAll('.result').length === 1")
+        assert page.locator(".result-name").inner_text() == "Artist - Video"
+        assert page.locator("#count").inner_text() == "1 of 3 results · 1 DJPoolRecords"
+        assert djpool_queries == ["Artist"]
+        assert rvremix_queries == ["Artist"]
+
+        page.locator("#result-filter").fill('"artist video"')
+        page.wait_for_function("() => document.querySelectorAll('.result').length === 1")
+        assert page.locator(".result-name").inner_text() == "Artist - Video"
+
+        page.locator("#result-filter").fill('"video artist"')
+        page.wait_for_function("() => document.querySelectorAll('.result').length === 0")
+        assert "No loaded results match" in page.locator(".empty").inner_text()
+
+        page.locator("#result-filter").fill("video artist")
+        page.wait_for_function("() => document.querySelectorAll('.result').length === 1")
+        assert page.locator(".result-name").inner_text() == "Artist - Video"
+        assert djpool_queries == ["Artist"]
+        assert rvremix_queries == ["Artist"]
+
+        page.locator("#clear-filter").click()
+        page.wait_for_function("() => document.querySelectorAll('.result').length === 3")
+        assert page.locator("#count").inner_text() == "3 results · 3 DJPoolRecords"
+        assert djpool_queries == ["Artist"]
+        assert rvremix_queries == ["Artist"]
+        browser.close()
+
+
 def test_cached_launch_searches_without_homepage_and_renders_results() -> None:
     seen: list[str] = []
     refreshes: list[str] = []
     previews: list[dict[str, object]] = []
     cached_downloads: list[dict[str, object]] = []
+    remote_downloads: list[dict[str, object]] = []
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=True)
         context = browser.new_context()
@@ -81,6 +138,10 @@ def test_cached_launch_searches_without_homepage_and_renders_results() -> None:
         page.expose_binding(
             "requestCachedDownload",
             lambda _source, raw: cached_downloads.append(json.loads(raw)) or True,
+        )
+        page.expose_binding(
+            "requestRemoteDownload",
+            lambda _source, raw: remote_downloads.append(json.loads(raw)) or "download-request-1",
         )
         page.goto(APP_URL)
         page.evaluate("([cache, query]) => window.djpool.start(cache, query)", [TEMPLATE, "Artist intro"])
@@ -136,10 +197,14 @@ def test_cached_launch_searches_without_homepage_and_renders_results() -> None:
             "element => Number(getComputedStyle(element).opacity) === 1",
             arg=preview_icon.element_handle(),
         )
-        first_result.locator(".download").evaluate(
-            "element => element.addEventListener('click', event => event.preventDefault(), { once: true })"
-        )
         first_result.locator(".download").click()
+        page.wait_for_function("() => document.querySelector('.download').dataset.downloadRequestId === 'download-request-1'")
+        assert remote_downloads == [{
+            "id": "djpool-rest-0",
+            "filename": "Artist - Song.mp3",
+            "mime_type": "audio/mpeg",
+            "url": "https://djpoolrecords.com/wp-admin/admin-ajax.php?action=download&id=0",
+        }]
         assert previews == []
         first_result.click(position={"x": 12, "y": 12})
         page.wait_for_selector("#player.visible")
@@ -157,13 +222,22 @@ def test_cached_launch_searches_without_homepage_and_renders_results() -> None:
         page.wait_for_selector("#player audio[controls]")
         assert page.locator("#player audio").get_attribute("src") == MEDIA_URL
         assert "nodownload" in (page.locator("#player audio").get_attribute("controlslist") or "")
+        page.mouse.move(0, 0)
+        active_result = page.locator(".result.active-preview")
+        assert active_result.count() == 1
+        assert active_result.get_attribute("aria-current") == "true"
+        assert active_result.locator(".preview-action").evaluate(
+            "element => getComputedStyle(element).opacity"
+        ) == "1"
+        page.locator(".size-sort").click()
+        assert page.locator(".result.active-preview").count() == 1
         assert player_download.is_visible()
         assert player_download.evaluate("element => element.tagName") == "BUTTON"
         assert player_download.get_attribute("href") is None
         player_download.click()
         assert cached_downloads == [{
             "request_id": "preview-request-1",
-            "filename": first_result.locator(".download").get_attribute("download"),
+            "filename": "Artist - Song.mp3",
         }]
         assert page.locator("#status").inner_text().startswith("Saving cached preview ")
         assert player_download.is_disabled()
@@ -177,8 +251,62 @@ def test_cached_launch_searches_without_homepage_and_renders_results() -> None:
         assert player_box is not None
         assert abs(player_box["y"] + player_box["height"] - viewport_height) < 1
         assert page.locator("body").evaluate("element => element.classList.contains('preview-open')")
+        page.locator("#close-player").click()
+        assert page.locator(".result.active-preview").count() == 0
         assert BASE_PAGE not in seen
         assert refreshes == []
+        browser.close()
+
+
+def test_rapid_result_downloads_are_queued_and_completed_independently() -> None:
+    remote_downloads: list[dict[str, object]] = []
+
+    def queue_download(_source: object, raw: str) -> str:
+        remote_downloads.append(json.loads(raw))
+        return f"download-request-{len(remote_downloads)}"
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.route(f"{APP_URL}*", lambda route: route.fulfill(status=200, content_type="text/html", body=UI))
+        page.expose_binding("requestDJPoolSearch", lambda _source, query: parse_search_payload(PAYLOAD))
+        page.expose_binding("requestRVRemixSearch", lambda _source, query: {"count": 0, "results": []})
+        page.expose_binding(
+            "mergeResultModels",
+            lambda _source, raw: merge_result_models(
+                json.loads(raw)["models"],
+                later_title_term=json.loads(raw)["later_title_term"],
+            ),
+        )
+        page.expose_binding("requestBootstrap", lambda _source, query: True)
+        page.expose_binding("requestRemoteDownload", queue_download)
+        page.goto(APP_URL)
+        page.evaluate("([cache, query]) => window.djpool.start(cache, query)", [TEMPLATE, "Artist"])
+        page.wait_for_function("() => document.querySelectorAll('.result .download').length === 2")
+
+        page.evaluate("() => document.querySelectorAll('.result .download').forEach(button => button.click())")
+        page.wait_for_function(
+            "() => [...document.querySelectorAll('.result .download')].every(button => button.dataset.downloadRequestId)"
+        )
+
+        assert [item["filename"] for item in remote_downloads] == [
+            "Artist - Song.mp3",
+            "Artist - Video.mp3",
+        ]
+        buttons = page.locator(".result .download")
+        assert buttons.nth(0).get_attribute("aria-disabled") == "true"
+        assert buttons.nth(1).get_attribute("aria-disabled") == "true"
+
+        page.evaluate(
+            "() => window.djpool.downloadFinished('Downloaded: Artist - Song.mp3', false, 'download-request-1')"
+        )
+        assert buttons.nth(0).get_attribute("aria-disabled") is None
+        assert buttons.nth(1).get_attribute("aria-disabled") == "true"
+
+        page.evaluate(
+            "() => window.djpool.downloadFinished('Downloaded: Artist - Video.mp3', false, 'download-request-2')"
+        )
+        assert buttons.nth(1).get_attribute("aria-disabled") is None
         browser.close()
 
 

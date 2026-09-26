@@ -73,10 +73,9 @@
     }
 
     .search-row { display: flex; gap: 10px; }
-    #query {
+    #query, #result-filter {
       min-width: 0;
       flex: 1;
-      height: 44px;
       padding: 0 14px;
       border: 1px solid var(--border);
       border-radius: 9px;
@@ -84,8 +83,10 @@
       background: #0f1319;
       color: var(--text);
     }
-    #query:focus { border-color: #a65bad; box-shadow: 0 0 0 3px rgb(166 91 173 / 18%); }
-    #query::placeholder { color: #778190; }
+    #query { height: 44px; }
+    #result-filter { height: 36px; }
+    #query:focus, #result-filter:focus { border-color: #a65bad; box-shadow: 0 0 0 3px rgb(166 91 173 / 18%); }
+    #query::placeholder, #result-filter::placeholder { color: #778190; }
 
     .primary, .variant, .action {
       border: 1px solid transparent;
@@ -104,6 +105,8 @@
     .variants { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 10px; }
     .variant { padding: 6px 11px; border-color: #3a4352; background: #222936; font-size: 13px; }
     .variant:hover { background: #2b3442; border-color: #596477; }
+    .result-filter-row { display: flex; gap: 7px; margin-top: 10px; }
+    #clear-filter:disabled { cursor: default; opacity: .42; }
 
     .status {
       position: fixed;
@@ -209,11 +212,14 @@
     }
     .result.previewable:hover .preview-action,
     .result.previewable:focus .preview-action,
-    .result.previewable:focus-within .preview-action {
+    .result.previewable:focus-within .preview-action,
+    .result.active-preview .preview-action {
       opacity: 1;
       pointer-events: auto;
       transform: translateX(0);
     }
+    .result.active-preview { border-color: #a65bad; }
+    .result.active-preview .preview-action { background: var(--accent); border-color: var(--accent); }
     .action.download { background: var(--accent); border-color: var(--accent); }
     .action.download:hover { background: var(--accent-hover); }
     .action[disabled] { cursor: not-allowed; opacity: .38; }
@@ -304,6 +310,10 @@
         <button class="variant" data-suffix="short" type="button">Short</button>
         <button id="clear-modifier" class="variant" type="button">Clear</button>
       </div>
+      <div class="result-filter-row">
+        <input id="result-filter" type="search" autocomplete="off" spellcheck="false" placeholder='Filter loaded results… use "quotes" for a phrase' aria-label="Filter loaded results">
+        <button id="clear-filter" class="variant" type="button" disabled>Clear filter</button>
+      </div>
     </section>
 
     <div id="status" class="status" role="status" aria-live="polite">Starting secure session…</div>
@@ -348,8 +358,11 @@
         activeDJPoolError: "",
         activeRVError: "",
         activeCrateError: "",
+        activeMergedModel: null,
+        resultFilter: "",
         renderRevision: 0,
         activePreviewRequest: null,
+        activePreviewIdentity: "",
         previewGeneration: 0,
         previewFilename: "",
         previewCanDownload: false,
@@ -360,6 +373,8 @@
       const queryInput = document.getElementById("query");
       const form = document.getElementById("search-form");
       const searchButton = document.getElementById("search-button");
+      const resultFilterInput = document.getElementById("result-filter");
+      const clearFilterButton = document.getElementById("clear-filter");
       const status = document.getElementById("status");
       const count = document.getElementById("count");
       const results = document.getElementById("results");
@@ -409,6 +424,68 @@
         return stripApostrophes(query).trim().replace(/\s+/g, " ").toLowerCase();
       }
 
+      function normalizedFilterTokens(value) {
+        return String(value || "")
+          .normalize("NFKD")
+          .replace(/[\u0300-\u036f]/g, "")
+          .toLowerCase()
+          .match(/[a-z0-9]+/g) || [];
+      }
+
+      function parsedFilterTerms(value) {
+        const phrases = [];
+        const unquoted = String(value || "").replace(/"([^"]*)"/g, (_match, phrase) => {
+          const normalizedPhrase = normalizedFilterTokens(phrase).join(" ");
+          if (normalizedPhrase) phrases.push(normalizedPhrase);
+          return " ";
+        });
+        return { phrases, tokens: normalizedFilterTokens(unquoted) };
+      }
+
+      function filterLoadedResults(items) {
+        const required = parsedFilterTerms(state.resultFilter);
+        if (!required.tokens.length && !required.phrases.length) return items;
+        return items.filter(item => {
+          const searchableFields = [
+            item.display_name,
+            item.name,
+            item.filename,
+            item.provider,
+            item.folder,
+            item.path,
+            item.bpm,
+            item.size
+          ].filter(value => value !== null && value !== undefined).map(String);
+          const availableTokens = normalizedFilterTokens(searchableFields.join(" "));
+          const availablePhrases = searchableFields.map(field => normalizedFilterTokens(field).join(" "));
+          const tokensMatch = required.tokens.every(
+            token => availableTokens.some(candidate => candidate.includes(token))
+          );
+          const phrasesMatch = required.phrases.every(
+            phrase => availablePhrases.some(field => ` ${field} `.includes(` ${phrase} `))
+          );
+          return tokensMatch && phrasesMatch;
+        });
+      }
+
+      function previewIdentity(item) {
+        return [
+          item.provider || "Unknown",
+          item.id || item.provider_item_id || item.filename || item.name || ""
+        ].join(":");
+      }
+
+      function setActivePreview(item = null) {
+        state.activePreviewIdentity = item ? previewIdentity(item) : "";
+        document.querySelectorAll(".result").forEach(row => {
+          const active = Boolean(state.activePreviewIdentity) &&
+            row.dataset.previewIdentity === state.activePreviewIdentity;
+          row.classList.toggle("active-preview", active);
+          if (active) row.setAttribute("aria-current", "true");
+          else row.removeAttribute("aria-current");
+        });
+      }
+
       function closePlayer() {
         state.previewGeneration += 1;
         state.activePreviewRequest = null;
@@ -423,6 +500,7 @@
         state.previewFilename = "";
         state.previewCanDownload = false;
         state.activeDirectDownload = null;
+        setActivePreview();
       }
 
       async function resolveCrateItem(item) {
@@ -456,6 +534,7 @@
           }
         }
         if (!item.preview_url || !["audio", "video"].includes(item.kind)) return;
+        setActivePreview(item);
         if (item.direct_stream) {
           const media = document.createElement("audio");
           media.controls = true;
@@ -463,7 +542,9 @@
           media.autoplay = true;
           media.preload = "metadata";
           media.src = item.preview_url;
-          media.addEventListener("error", () => setStatus("The DJFolders preview could not be played.", true), { once: true });
+          media.addEventListener("error", () => {
+            setStatus("The DJFolders preview could not be played.", true);
+          }, { once: true });
           playerTitle.textContent = item.name;
           playerMedia.replaceChildren(media);
           player.dataset.kind = "audio";
@@ -513,8 +594,11 @@
 
       function render(model) {
         results.replaceChildren();
-        const total = model.results.length;
-        const providerCounts = model.results.reduce((counts, item) => {
+        const availableResults = Array.isArray(model.results) ? model.results : [];
+        const visibleResults = filterLoadedResults(availableResults);
+        const total = visibleResults.length;
+        const availableTotal = availableResults.length;
+        const providerCounts = visibleResults.reduce((counts, item) => {
           const provider = item.provider || "Unknown";
           counts[provider] = (counts[provider] || 0) + 1;
           return counts;
@@ -523,14 +607,19 @@
           .filter(provider => providerCounts[provider])
           .map(provider => `${providerCounts[provider]} ${provider}`)
           .join(" · ");
-        count.textContent = `${total.toLocaleString()} result${total === 1 ? "" : "s"}` +
+        const totalLabel = state.resultFilter.trim()
+          ? `${total.toLocaleString()} of ${availableTotal.toLocaleString()} results`
+          : `${total.toLocaleString()} result${total === 1 ? "" : "s"}`;
+        count.textContent = totalLabel +
           (breakdown ? ` · ${breakdown}` : "");
-        if (!model.results.length) {
+        if (!visibleResults.length) {
           const empty = document.createElement("div");
           empty.className = "empty";
-          empty.textContent = "No matching files were found.";
+          empty.textContent = state.resultFilter.trim()
+            ? `No loaded results match “${state.resultFilter.trim()}”.`
+            : "No matching files were found.";
           results.appendChild(empty);
-          return;
+          return { total, availableTotal };
         }
 
         const header = document.createElement("div");
@@ -564,7 +653,7 @@
         header.append(headerSpacer, columnHeads);
         results.appendChild(header);
 
-        const renderedResults = model.results.map((item, index) => ({ item, index }));
+        const renderedResults = visibleResults.map((item, index) => ({ item, index }));
         if (state.bpmSort || state.sizeSort) {
           renderedResults.sort((left, right) => {
             const field = state.bpmSort ? "bpm" : "size_bytes";
@@ -581,6 +670,11 @@
         for (const { item } of renderedResults) {
           const row = document.createElement("article");
           row.className = "result";
+          row.dataset.previewIdentity = previewIdentity(item);
+          if (row.dataset.previewIdentity === state.activePreviewIdentity) {
+            row.classList.add("active-preview");
+            row.setAttribute("aria-current", "true");
+          }
           const details = document.createElement("div");
           details.className = "result-details";
           const name = document.createElement("div");
@@ -633,39 +727,31 @@
           }
           actions.append(bpm, size);
           if (item.download_url || canResolve) {
-            const isRemoteDownload = ["RVRemix", "DJFolders"].includes(item.provider);
-            const download = isRemoteDownload ? document.createElement("button") : makeAction("Download", "download");
-            if (isRemoteDownload) {
-              download.className = "action download";
-              download.type = "button";
-              download.textContent = "Download";
-              download.addEventListener("click", async event => {
-                event.preventDefault();
-                event.stopPropagation();
-                if (download.getAttribute("aria-disabled") === "true") return;
-                download.setAttribute("aria-disabled", "true");
-                setStatus(`Preparing ${item.filename} from ${item.provider}…`);
-                try {
-                  const downloadable = canResolve ? await resolveCrateItem(item) : item;
-                  await window.requestRemoteDownload(JSON.stringify({
-                    id: downloadable.id,
-                    filename: downloadable.filename,
-                    mime_type: downloadable.mime_type || "audio/mpeg",
-                    url: downloadable.download_url
-                  }));
-                } catch (error) {
-                  download.removeAttribute("aria-disabled");
-                  setStatus(`Could not start ${item.provider} download: ${error.message}`, true);
-                }
-              });
-            } else {
-              download.href = item.download_url;
-              download.download = item.filename;
-              download.addEventListener("click", event => {
-                event.stopPropagation();
-                setStatus(`Downloading ${item.filename}…`);
-              });
-            }
+            const download = document.createElement("button");
+            download.className = "action download";
+            download.type = "button";
+            download.textContent = "Download";
+            download.addEventListener("click", async event => {
+              event.preventDefault();
+              event.stopPropagation();
+              if (download.getAttribute("aria-disabled") === "true") return;
+              download.setAttribute("aria-disabled", "true");
+              setStatus(`Preparing ${item.filename} from ${item.provider}…`);
+              try {
+                const downloadable = canResolve ? await resolveCrateItem(item) : item;
+                const requestId = await window.requestRemoteDownload(JSON.stringify({
+                  id: downloadable.id,
+                  filename: downloadable.filename,
+                  mime_type: downloadable.mime_type || "audio/mpeg",
+                  url: downloadable.download_url
+                }));
+                download.dataset.downloadRequestId = String(requestId || "");
+              } catch (error) {
+                download.removeAttribute("aria-disabled");
+                delete download.dataset.downloadRequestId;
+                setStatus(`Could not start ${item.provider} download: ${error.message}`, true);
+              }
+            });
             actions.appendChild(download);
           } else {
             actions.appendChild(document.createElement("span"));
@@ -673,6 +759,7 @@
           row.append(details, actions);
           results.appendChild(row);
         }
+        return { total, availableTotal };
       }
 
       async function requestRefresh(query, reason) {
@@ -758,7 +845,7 @@
         return records.length === state.activeDJPoolKeys.length && records.every(record => record.done);
       }
 
-      function updateActiveStatus(total) {
+      function updateActiveStatus(total, availableTotal = total) {
         const djpoolFinished = activeDJPoolFinished();
         if (state.activeDJPoolError) {
           setStatus(state.activeDJPoolError, true);
@@ -792,6 +879,8 @@
               ? "DJPoolRecords results ready; loading RVRemix…"
               : "No DJPoolRecords matches; loading RVRemix…"
           );
+        } else if (state.resultFilter.trim() && availableTotal && !total) {
+          setStatus(`No loaded results match “${state.resultFilter.trim()}”.`);
         } else {
           setStatus(total ? "" : `No matches for “${state.activeQuery}”.`);
         }
@@ -805,8 +894,9 @@
           ? await window.mergeResultModels(JSON.stringify({ models, later_title_term: "" }))
           : (models[0] || { count: 0, results: [] });
         if (generation !== state.searchGeneration || revision !== state.renderRevision) return;
-        render(model);
-        updateActiveStatus(model.results.length);
+        state.activeMergedModel = model;
+        const rendered = render(model);
+        updateActiveStatus(rendered.total, rendered.availableTotal);
       }
 
       async function rebuildActiveDJPool() {
@@ -830,6 +920,10 @@
         const generation = ++state.searchGeneration;
         state.activeQuery = clean;
         queryInput.value = clean;
+        state.resultFilter = "";
+        state.activeMergedModel = null;
+        resultFilterInput.value = "";
+        clearFilterButton.disabled = true;
         closePlayer();
         if (!clean) {
           setBusy(false);
@@ -926,6 +1020,18 @@
         event.preventDefault();
         runSearch(queryInput.value, false);
       });
+      resultFilterInput.addEventListener("input", () => {
+        state.resultFilter = resultFilterInput.value;
+        clearFilterButton.disabled = !state.resultFilter;
+        if (!state.activeMergedModel) return;
+        const rendered = render(state.activeMergedModel);
+        updateActiveStatus(rendered.total, rendered.availableTotal);
+      });
+      clearFilterButton.addEventListener("click", () => {
+        resultFilterInput.value = "";
+        resultFilterInput.dispatchEvent(new Event("input"));
+        resultFilterInput.focus();
+      });
       document.querySelectorAll(".variant").forEach(button => {
         if (!button.dataset.suffix) return;
         button.addEventListener("click", () => runSearch(variantQuery(queryInput.value || state.activeQuery, button.dataset.suffix), false));
@@ -941,12 +1047,13 @@
         try {
           if (state.activeDirectDownload) {
             setStatus(`Downloading ${state.previewFilename} from DJFolders…`);
-            await window.requestRemoteDownload(JSON.stringify({
+            const requestId = await window.requestRemoteDownload(JSON.stringify({
               id: state.activeDirectDownload.id,
               filename: state.previewFilename,
               mime_type: state.activeDirectDownload.mime_type || "audio/mpeg",
               url: state.activeDirectDownload.download_url
             }));
+            playerDownload.dataset.downloadRequestId = String(requestId || "");
             return;
           }
           if (!state.activePreviewRequest) return;
@@ -1064,7 +1171,9 @@
           media.autoplay = true;
           media.preload = "auto";
           media.src = localUrl;
-          media.addEventListener("error", () => setStatus("The cached preview could not be played.", true), { once: true });
+          media.addEventListener("error", () => {
+            setStatus("The cached preview could not be played.", true);
+          }, { once: true });
           playerMedia.replaceChildren(media);
           player.dataset.kind = kind;
           playerDownload.hidden = !state.previewCanDownload;
@@ -1072,16 +1181,26 @@
         },
         previewFailed(requestId, message) {
           if (requestId !== state.activePreviewRequest || !player.classList.contains("visible")) return;
+          setActivePreview();
           const failure = document.createElement("div");
           failure.className = "preview-loading";
           failure.textContent = "Preview unavailable.";
           playerMedia.replaceChildren(failure);
           setStatus(message || "Could not cache the preview.", true);
         },
-        downloadFinished(message, warning) {
-          playerDownload.disabled = false;
-          document.querySelectorAll('.result .download[aria-disabled="true"]')
-            .forEach(button => button.removeAttribute("aria-disabled"));
+        downloadFinished(message, warning, requestId = "") {
+          const completedRequestId = String(requestId || "");
+          if (!completedRequestId || playerDownload.dataset.downloadRequestId === completedRequestId) {
+            playerDownload.disabled = false;
+            delete playerDownload.dataset.downloadRequestId;
+          }
+          if (completedRequestId) {
+            document.querySelectorAll('.result .download[aria-disabled="true"]').forEach(button => {
+              if (button.dataset.downloadRequestId !== completedRequestId) return;
+              button.removeAttribute("aria-disabled");
+              delete button.dataset.downloadRequestId;
+            });
+          }
           window.clearTimeout(window.djpoolDownloadStatusTimer);
           setStatus(message, Boolean(warning));
           window.djpoolDownloadStatusTimer = window.setTimeout(() => {

@@ -5,8 +5,19 @@ UI = (Path(__file__).parents[1] / "ui" / "app.html").read_text(encoding="utf-8")
 
 
 def test_ui_has_daily_workflow_controls() -> None:
-    for control in ["search-form", "data-suffix=\"intro\"", "data-suffix=\"clean\"", "data-suffix=\"dirty\"", "data-suffix=\"trans\"", "data-suffix=\"QH\"", "data-suffix=\"SE\"", "data-suffix=\"segue\"", "data-suffix=\"short\"", "clear-modifier", "player-media"]:
+    for control in ["search-form", "result-filter", "clear-filter", "data-suffix=\"intro\"", "data-suffix=\"clean\"", "data-suffix=\"dirty\"", "data-suffix=\"trans\"", "data-suffix=\"QH\"", "data-suffix=\"SE\"", "data-suffix=\"segue\"", "data-suffix=\"short\"", "clear-modifier", "player-media"]:
         assert control in UI
+
+
+def test_result_filter_is_client_side_and_punctuation_insensitive() -> None:
+    assert "function filterLoadedResults(items)" in UI
+    assert "function parsedFilterTerms(value)" in UI
+    assert "phrases.push(normalizedPhrase)" in UI
+    assert 'includes(` ${phrase} `)' in UI
+    assert 'state.activeMergedModel = model' in UI
+    assert 'resultFilterInput.addEventListener("input"' in UI
+    assert '.normalize("NFKD")' in UI
+    assert "requestDJPoolSearch(state.resultFilter" not in UI
 
 
 def test_ui_has_sortable_bpm_column() -> None:
@@ -121,6 +132,9 @@ def test_result_tile_is_the_preview_control() -> None:
     assert 'event.target.closest(".download")' in UI
     assert 'event.stopPropagation()' in UI
     assert ".result.previewable:hover .preview-action" in UI
+    assert ".result.active-preview .preview-action" in UI
+    assert "state.activePreviewIdentity" in UI
+    assert 'row.setAttribute("aria-current", "true")' in UI
     assert "min-height: 58px" in UI
     assert "padding: 7px 14px" in UI
 
@@ -139,7 +153,8 @@ def test_status_is_out_of_flow_to_prevent_layout_shift() -> None:
 
 
 def test_download_completion_uses_temporary_status_toast() -> None:
-    assert "downloadFinished(message, warning)" in UI
+    assert 'downloadFinished(message, warning, requestId = "")' in UI
+    assert "button.dataset.downloadRequestId !== completedRequestId" in UI
     assert "window.clearTimeout(window.djpoolDownloadStatusTimer)" in UI
     assert "}, 5000);" in UI
 
