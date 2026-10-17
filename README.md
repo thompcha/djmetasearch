@@ -164,10 +164,10 @@ only from `main`; keep unfinished work on another branch.
 ## What the application does
 
 - Queries DJPoolRecords through its authenticated audio-search endpoint,
-  RVRemix through its public LetsBox widget, and DJFolders through its private
+  RVRemix through its public RVRemix search endpoint, and DJFolders through its private
   audio-search API.
-- Converts `Artist - Title` to a focused RVRemix query and filters irrelevant or
-  duplicate results locally.
+- Searches RVRemix audio and filters irrelevant or duplicate results locally.
+  RVRemix downloads save the same audio stream used for previews.
 - Loads DJPoolRecords pages progressively while RVRemix and DJFolders run in
   the background.
 - Labels and priority-sorts merged results, previews media through a temporary

@@ -37,7 +37,7 @@ from djmetasearch.results import (
     safe_preview_url,
     safe_remote_url,
 )
-from djmetasearch.rvremix import PAGE_URL as RVREMIX_URL, RVRemixClient
+from djmetasearch.rvremix import PAGE_URL as RVREMIX_URL, RVRemixClient, RVRemixSizeLookup
 
 ROOT = Path(__file__).resolve().parent
 UI_PATH = ROOT / "ui" / "app.html"
@@ -56,6 +56,17 @@ MEDIA_TYPES = {
     "audio": "audio/mpeg",
     "video": "video/mp4",
 }
+
+
+def build_browser_context_options(state_path: Path = STATE_PATH) -> dict[str, object]:
+    """Use the native window viewport so page layout follows window resizing."""
+    options: dict[str, object] = {
+        "accept_downloads": True,
+        "no_viewport": True,
+    }
+    if state_path.exists():
+        options["storage_state"] = str(state_path)
+    return options
 
 
 def parse_args() -> argparse.Namespace:
@@ -528,12 +539,7 @@ def run() -> int:
     if imported:
         print(f"Imported a one-time copy of the existing authenticated session into {STATE_PATH.name}.")
 
-    context_options: dict[str, object] = {
-        "accept_downloads": True,
-        "viewport": {"width": 1280, "height": 820},
-    }
-    if STATE_PATH.exists():
-        context_options["storage_state"] = str(STATE_PATH)
+    context_options = build_browser_context_options()
 
     pending_refreshes: list[str] = []
     pending_djpool_searches: dict[str, dict[str, object]] = {}
@@ -550,6 +556,7 @@ def run() -> int:
     staging_dir = Path(tempfile.mkdtemp(prefix="djmetasearch_dl_"))
     preview_cache_dir = staging_dir / "previews"
     rvremix = RVRemixClient()
+    rvremix_sizes = RVRemixSizeLookup()
     rvremix_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="rvremix-search")
     crate_search = CrateSearchClient()
     crate_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="crate-search")
@@ -676,6 +683,10 @@ def run() -> int:
 
             app_page.expose_binding("requestDJPoolSearch", queue_djpool_search)
             app_page.expose_binding("requestRVRemixSearch", queue_rvremix_search)
+            app_page.expose_binding(
+                "requestRVRemixSizes",
+                lambda _source, raw: rvremix_sizes.set_results(json.loads(raw)),
+            )
             app_page.expose_binding("requestCrateSearch", queue_crate_search)
             app_page.expose_binding("requestCrateResolve", queue_crate_resolve)
             app_page.expose_binding("mergeResultModels", merge_models)
@@ -767,6 +778,15 @@ def run() -> int:
                             [request_id, str(exc)],
                         ):
                             break
+                size_updates = rvremix_sizes.poll({
+                    str(record["source_url"]): int(record["size"])
+                    for record in media_cache.values()
+                    if record.get("source_url") and record.get("size")
+                })
+                if size_updates and not evaluate_open_page(
+                    app_page, "sizes => window.djpool.rvremixSizesUpdated(sizes)", size_updates
+                ):
+                    break
                 closed_during_callback = False
                 completed_rvremix = [
                     request_id
@@ -960,6 +980,7 @@ def run() -> int:
                 pass
             browser.close()
     finally:
+        rvremix_sizes.close()
         rvremix_executor.shutdown(wait=False, cancel_futures=True)
         crate_executor.shutdown(wait=False, cancel_futures=True)
         shutil.rmtree(staging_dir, ignore_errors=True)

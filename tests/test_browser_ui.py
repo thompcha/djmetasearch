@@ -87,6 +87,14 @@ def test_filters_loaded_results_without_requesting_providers_again() -> None:
         page.locator("#result-filter").fill("video artist")
         page.wait_for_function("() => document.querySelectorAll('.result').length === 1")
         assert page.locator(".result-name").inner_text() == "Artist - Video"
+
+        page.locator("#result-filter").fill("artist -video")
+        page.wait_for_function("() => document.querySelectorAll('.result').length === 1")
+        assert page.locator(".result-name").inner_text() == "Artist - Song"
+
+        page.locator("#result-filter").fill('-"artist video"')
+        page.wait_for_function("() => document.querySelectorAll('.result').length === 2")
+        assert page.locator(".result-name", has_text="Artist - Video").count() == 0
         assert djpool_queries == ["Artist"]
         assert rvremix_queries == ["Artist"]
 
@@ -335,14 +343,14 @@ def test_combines_and_labels_rvremix_results() -> None:
     rv_model = {
         "count": 1,
         "results": [{
-            "id": "rv-1",
+            "id": "rvremix-123",
             "name": "Artist - RV Audio",
             "filename": "Artist - RV Audio.mp3",
             "size": "8 MB",
             "kind": "audio",
             "mime_type": "audio/mpeg",
-            "preview_url": "https://rvremix.com/wp-admin/admin-ajax.php?action=letsbox-stream&id=rv-1",
-            "download_url": "https://rvremix.com/wp-admin/admin-ajax.php?action=letsbox-stream&id=rv-1",
+            "preview_url": "https://rvremix.com/wp-admin/admin-ajax.php?action=rvrs_stream&nonce=token&file=123",
+            "download_url": "https://rvremix.com/wp-admin/admin-ajax.php?action=rvrs_stream&nonce=token&file=123",
             "provider": "RVRemix",
         }],
     }
@@ -373,15 +381,19 @@ def test_combines_and_labels_rvremix_results() -> None:
         assert page.locator("#count").inner_text() == "4 results · 3 DJPoolRecords · 1 RVRemix"
         rv_row = page.locator(".result", has=page.locator(".provider.rvremix"))
         assert rv_row.locator(".result-name").inner_text() == "Artist - RV Audio"
+        page.evaluate("() => window.djpool.rvremixSizesUpdated({'rvremix-123': 19965360})")
+        page.wait_for_function("() => document.querySelector('.provider.rvremix').closest('.result').querySelector('.result-size').textContent === '19.0 MB'")
+        assert rv_row.locator(".result-size").inner_text() == "19.0 MB"
+        assert page.locator(".result").count() == 4
         rv_download = rv_row.locator(".download")
         assert rv_download.evaluate("element => element.tagName") == "BUTTON"
         assert rv_download.get_attribute("href") is None
         rv_download.click()
         assert remote_downloads == [{
-            "id": "rv-1",
+            "id": "rvremix-123",
             "filename": "Artist - RV Audio.mp3",
             "mime_type": "audio/mpeg",
-            "url": "https://rvremix.com/wp-admin/admin-ajax.php?action=letsbox-stream&id=rv-1",
+            "url": "https://rvremix.com/wp-admin/admin-ajax.php?action=rvrs_stream&nonce=token&file=123",
         }]
         browser.close()
 
@@ -430,6 +442,73 @@ def test_renders_djpoolrecords_before_delayed_rvremix_results() -> None:
         page.wait_for_selector(".provider.rvremix")
         assert page.locator("#count").inner_text() == "4 results · 3 DJPoolRecords · 1 RVRemix"
         assert page.locator("#status").inner_text() == ""
+        browser.close()
+
+
+def test_download_click_survives_result_update_between_pointer_down_and_click() -> None:
+    remote_downloads: list[dict[str, object]] = []
+    rv_model = {
+        "count": 1,
+        "results": [{
+            "id": "rv-during-click",
+            "name": "Artist - Arriving RV Audio",
+            "filename": "Artist - Arriving RV Audio.mp3",
+            "size": "7 MB",
+            "kind": "audio",
+            "mime_type": "audio/mpeg",
+            "preview_url": "https://rvremix.com/wp-admin/admin-ajax.php?action=letsbox-stream&id=during-click",
+            "download_url": "https://rvremix.com/wp-admin/admin-ajax.php?action=letsbox-stream&id=during-click",
+            "provider": "RVRemix",
+        }],
+    }
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.route(f"{APP_URL}*", lambda route: route.fulfill(status=200, content_type="text/html", body=UI))
+        page.expose_binding("requestDJPoolSearch", lambda _source, query: parse_search_payload(PAYLOAD))
+        page.expose_binding("requestRVRemixSearch", lambda _source, query: "rv-request-during-click")
+        page.expose_binding(
+            "requestRemoteDownload",
+            lambda _source, raw: remote_downloads.append(json.loads(raw)) or "download-during-click",
+        )
+        page.expose_binding(
+            "mergeResultModels",
+            lambda _source, raw: merge_result_models(
+                json.loads(raw)["models"],
+                later_title_term=json.loads(raw)["later_title_term"],
+            ),
+        )
+        page.expose_binding("requestBootstrap", lambda _source, query: True)
+        page.goto(APP_URL)
+        page.evaluate("([cache, query]) => window.djpool.start(cache, query)", [TEMPLATE, "Artist"])
+        page.wait_for_function("() => document.querySelectorAll('.result').length === 3")
+
+        first_download = page.locator(".result .download").first
+        box = first_download.bounding_box()
+        assert box is not None
+        page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+        page.mouse.down()
+        page.evaluate(
+            "model => window.djpool.rvremixSearchSucceeded('rv-request-during-click', model)",
+            rv_model,
+        )
+        page.evaluate("() => new Promise(resolve => setTimeout(resolve, 20))")
+        assert page.locator(".result").count() == 3
+
+        page.mouse.up()
+        page.wait_for_function("() => document.querySelectorAll('.result').length === 4")
+        page.wait_for_function(
+            "() => document.querySelector('.result .download').dataset.downloadRequestId === 'download-during-click'"
+        )
+
+        assert remote_downloads[0]["filename"] == "Artist - Song.mp3"
+        pending = page.locator(".result", has_text="Artist - Song").locator(".download")
+        assert pending.get_attribute("aria-disabled") == "true"
+        page.evaluate(
+            "() => window.djpool.downloadFinished('Downloaded: Artist - Song.mp3', false, 'download-during-click')"
+        )
+        assert pending.get_attribute("aria-disabled") is None
         browser.close()
 
 

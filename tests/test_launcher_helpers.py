@@ -5,6 +5,7 @@ from playwright.sync_api import Error as PlaywrightError, sync_playwright
 
 import standalone_app
 from standalone_app import (
+    build_browser_context_options,
     page_has_audio_module,
     page_is_logged_out,
     evaluate_open_page,
@@ -14,6 +15,18 @@ from standalone_app import (
     try_auto_login,
     unique_destination,
 )
+
+
+def test_browser_context_uses_resizable_native_viewport(tmp_path: Path) -> None:
+    state_path = tmp_path / "state.json"
+    options = build_browser_context_options(state_path)
+
+    assert options["no_viewport"] is True
+    assert "viewport" not in options
+    assert "storage_state" not in options
+
+    state_path.write_text("{}", encoding="utf-8")
+    assert build_browser_context_options(state_path)["storage_state"] == str(state_path)
 
 
 def test_evaluate_open_page_treats_window_closure_as_normal_exit() -> None:

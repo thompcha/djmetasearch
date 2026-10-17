@@ -1,9 +1,10 @@
-"""Public RVRemix LetsBox search client."""
+"""Public RVRemix search client."""
 
 from __future__ import annotations
 
 import http.cookiejar
 import json
+import mimetypes
 import re
 import unicodedata
 import urllib.parse
@@ -12,7 +13,14 @@ import urllib.request
 from bs4 import BeautifulSoup
 
 from .query import strip_apostrophes
-from .results import parse_rvremix_payload
+from .results import (
+    media_kind,
+    parsed_size_bytes,
+    result_meets_minimum_size,
+    safe_preview_url,
+    sort_results,
+    split_trailing_bpm,
+)
 
 PAGE_URL = "https://rvremix.com/audio/"
 USER_AGENT = "DJMetaSearch/1.0"
@@ -83,6 +91,49 @@ def quoted_rvremix_query(query: str) -> str:
     return " ".join(quoted)
 
 
+def parse_search_payload(payload: object, endpoint: str, nonce: str) -> dict[str, object]:
+    """Convert the site's rvrs_search JSON into the shared audio model."""
+    if not isinstance(payload, dict) or payload.get("success") is not True:
+        data = payload.get("data") if isinstance(payload, dict) else None
+        message = data.get("message") if isinstance(data, dict) else None
+        raise ValueError(str(message or "RVRemix search returned an invalid response."))
+    data = payload.get("data")
+    if not isinstance(data, dict) or not isinstance(data.get("items"), list):
+        raise ValueError("RVRemix search response did not contain items.")
+    results = []
+    seen = set()
+    for entry in data["items"]:
+        if not isinstance(entry, dict) or entry.get("type") != "audio":
+            continue
+        name, file_id = entry.get("name"), entry.get("file_id")
+        if not isinstance(name, str) or not name.strip() or not isinstance(file_id, str) or not file_id.isdecimal():
+            continue
+        if media_kind(name) != "audio":
+            continue
+        key = " ".join(name.casefold().split())
+        size = parsed_size_bytes(entry.get("size"))
+        if key in seen or not result_meets_minimum_size({"size": size}):
+            continue
+        stream = safe_preview_url(endpoint + "?" + urllib.parse.urlencode(
+            {"action": "rvrs_stream", "nonce": nonce, "file": file_id}
+        ))
+        if not stream:
+            raise ValueError("RVRemix exposed an unsafe stream endpoint.")
+        seen.add(key)
+        display_name, bpm = split_trailing_bpm(name)
+        results.append({
+            "id": f"rvremix-{file_id}", "name": name, "display_name": display_name,
+            "bpm": bpm, "filename": name, "size": f"{size / 1024**2:.1f} MB" if size is not None else "",
+            "size_bytes": size, "kind": "audio",
+            "mime_type": mimetypes.guess_type(name)[0] or "audio/mpeg",
+            "preview_url": stream,
+            # Download the same audio used by the preview through the shared cache.
+            "download_url": stream, "provider": "RVRemix",
+        })
+    sort_results(results)
+    return {"count": len(results), "results": results}
+
+
 class RVRemixClient:
     def __init__(self, page_url: str = PAGE_URL, timeout: float = 90.0) -> None:
         self.page_url = page_url
@@ -108,56 +159,117 @@ class RVRemixClient:
     def bootstrap(self) -> dict[str, str]:
         with self._request(self.page_url) as response:
             page = response.read().decode(response.headers.get_content_charset() or "utf-8", errors="replace")
-        match = re.search(r"\bvar\s+LetsBox_vars\s*=\s*(\{.*?\})\s*;", page, re.DOTALL)
-        if not match:
-            raise RuntimeError("RVRemix did not expose its LetsBox configuration.")
-        variables = json.loads(match.group(1))
-        module = BeautifulSoup(page, "html.parser").select_one(
-            ".wpcp-module.LetsBox.searchlist[data-list='search']"
-        )
-        if module is None:
-            raise RuntimeError("RVRemix audio search widget was not found.")
-        self.template = {
-            "url": str(variables["ajax_url"]),
-            "action": "letsbox-get-filelist",
-            "listtoken": str(module.get("data-token") or ""),
-            "account_id": str(module.get("data-account-id") or ""),
-            "lastFolder": "",
-            "folderPath": str(module.get("data-path") or ""),
-            "sort": str(module.get("data-sort") or "name:asc"),
-            "_ajax_nonce": str(variables["refresh_nonce"]),
-            "mobile": "",
-        }
-        if not self.template["listtoken"] or not self.template["account_id"]:
-            raise RuntimeError("RVRemix audio search widget was incomplete.")
-        return self.template
+        soup = BeautifulSoup(page, "html.parser")
+        for script in soup.find_all("script", src=False):
+            source = script.string or script.get_text()
+            if not re.search(r"action\s*:\s*[\"']rvrs_search[\"']", source):
+                continue
+            match = re.search(r'const\s+endpoint\s*=\s*("(?:[^"\\]|\\.)*")\s*,\s*nonce\s*=\s*("(?:[^"\\]|\\.)*")', source)
+            if not match:
+                continue
+            endpoint, nonce = map(json.loads, match.groups())
+            if endpoint != "https://rvremix.com/wp-admin/admin-ajax.php" or not nonce:
+                raise RuntimeError("RVRemix search configuration was invalid.")
+            self.template = {"url": endpoint, "nonce": nonce}
+            return self.template
+        raise RuntimeError("RVRemix search widget was not found.")
 
     def search(self, query: str) -> dict[str, object]:
-        focused_query = quoted_rvremix_query(query)
+        focused_query = " ".join(query.split())
         if not focused_query:
             return {"count": 0, "results": []}
         last_error: Exception | None = None
         for attempt in range(2):
             try:
                 template = self.template or self.bootstrap()
-                form = {key: value for key, value in template.items() if key != "url"}
-                form["query"] = focused_query
+                form = {"action": "rvrs_search", "nonce": template["nonce"],
+                        "q": focused_query, "kind": "audio"}
                 with self._request(template["url"], urllib.parse.urlencode(form).encode()) as response:
                     payload = json.load(response)
-                return filter_rvremix_model(parse_rvremix_payload(payload), query)
-            except urllib.error.HTTPError as exc:
-                if exc.code == 401:
-                    # RVRemix currently rejects its own logged-out LetsBox widgets.
-                    # Treat that temporary provider condition as no results instead
-                    # of surfacing an error on every combined search.
-                    return {"count": 0, "results": []}
-                last_error = exc
-                self.template = None
-                if attempt == 0:
-                    continue
+                return filter_rvremix_model(parse_search_payload(payload, template["url"], template["nonce"]), query)
             except Exception as exc:
                 last_error = exc
                 self.template = None
                 if attempt == 0:
                     continue
         raise RuntimeError(f"RVRemix search failed: {last_error}")
+
+
+def probe_stream_size(url: str, timeout: float = 10.0) -> int | None:
+    """Read audio size without transferring the stream; range fallback is one byte."""
+    if not safe_preview_url(url) or urllib.parse.urlsplit(url).hostname != "rvremix.com":
+        return None
+    for method in ("HEAD", "GET"):
+        headers = {"Referer": PAGE_URL, "User-Agent": USER_AGENT}
+        if method == "GET":
+            headers["Range"] = "bytes=0-0"
+        try:
+            request = urllib.request.Request(url, method=method, headers=headers)
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                if not response.headers.get("Content-Type", "").lower().startswith("audio/"):
+                    return None
+                if method == "HEAD":
+                    length = response.headers.get("Content-Length", "")
+                else:
+                    match = re.fullmatch(r"bytes 0-0/(\d+)", response.headers.get("Content-Range", ""))
+                    length = match.group(1) if response.status == 206 and match else ""
+                if length.isdecimal() and int(length) > 0:
+                    return int(length)
+        except urllib.error.HTTPError as exc:
+            if method != "HEAD" or exc.code not in {405, 501}:
+                return None
+        except Exception:
+            return None
+    return None
+
+
+class RVRemixSizeLookup:
+    """Keep at most two probes running; never queue probes for obsolete results."""
+
+    def __init__(self, probe=probe_stream_size):
+        from concurrent.futures import ThreadPoolExecutor
+        self.executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="rvremix-size")
+        self.probe = probe
+        self.wanted = {}
+        self.pending = {}
+        self.cache = {}
+        self.attempted = set()
+        self.delivered = {}
+
+    def set_results(self, rows):
+        wanted = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            identity, url = row.get("id"), row.get("preview_url")
+            if (isinstance(identity, str) and identity.startswith("rvremix-")
+                    and safe_preview_url(url) and urllib.parse.urlsplit(url).hostname == "rvremix.com"):
+                wanted[identity] = url
+                size = row.get("size_bytes")
+                if isinstance(size, (int, float)) and not isinstance(size, bool) and size > 0:
+                    self.cache[identity] = int(size)
+        self.wanted = wanted
+
+    def poll(self, media_sizes=None):
+        for identity, future in list(self.pending.items()):
+            if future.done():
+                del self.pending[identity]
+                try:
+                    size = future.result()
+                    if size:
+                        self.cache[identity] = size
+                except Exception:
+                    pass
+        for identity, url in self.wanted.items():
+            if media_sizes and media_sizes.get(url):
+                self.cache[identity] = media_sizes[url]
+            if identity not in self.cache and identity not in self.attempted and len(self.pending) < 2:
+                self.attempted.add(identity)
+                self.pending[identity] = self.executor.submit(self.probe, url)
+        updates = {identity: self.cache[identity] for identity in self.wanted
+                   if identity in self.cache and self.delivered.get(identity) != self.cache[identity]}
+        self.delivered.update(updates)
+        return updates
+
+    def close(self):
+        self.executor.shutdown(wait=False, cancel_futures=True)

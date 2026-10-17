@@ -18,6 +18,7 @@ VIDEO_EXTENSIONS = {"m4v", "mov", "mp4", "webm"}
 RESULT_PRIORITY_TERMS = (
     "TMU",
     "CK",
+    "HH",
     "MMP",
     "Nick Bike",
     "Johnny Flores",
@@ -27,6 +28,8 @@ RESULT_PRIORITY_TERMS = (
     "Doc Adam",
     "Deville",
     "Ivan Santana",
+    "DJ Rukus",
+    "DJcity",
     "Intro",
 )
 INTRO_PRIORITY_RANK = RESULT_PRIORITY_TERMS.index("Intro")
@@ -154,7 +157,16 @@ def safe_preview_url(value: object) -> str:
     if (
         hostname == RVREMIX_HOST
         and parsed.path == "/wp-admin/admin-ajax.php"
-        and parse_qs(parsed.query).get("action") == ["letsbox-stream"]
+        and (
+            parse_qs(parsed.query).get("action") == ["letsbox-stream"]
+            or (
+                parse_qs(parsed.query).get("action") == ["rvrs_stream"]
+                and len(parse_qs(parsed.query).get("file", [])) == 1
+                and parse_qs(parsed.query)["file"][0].isdecimal()
+                and len(parse_qs(parsed.query).get("nonce", [])) == 1
+                and bool(parse_qs(parsed.query)["nonce"][0])
+            )
+        )
     ):
         return value
     if hostname == CRATE_SEARCH_HOST and parsed.path == CRATE_SEARCH_PATH:
@@ -294,11 +306,11 @@ def clean_catalog_name(name: str) -> str:
 
 
 def preferred_term_rank(name: str) -> int | None:
-    """Return the configured label rank; CK must be a standalone word."""
+    """Return the configured label rank; short acronyms must be standalone words."""
     normalized_name = name.casefold()
     for rank, term in enumerate(RESULT_PRIORITY_TERMS[:-1]):
-        if term == "CK":
-            if re.search(r"(?<!\w)ck(?!\w)", normalized_name):
+        if term in {"CK", "HH"}:
+            if re.search(rf"(?<!\w){term.casefold()}(?!\w)", normalized_name):
                 return rank
         elif term.casefold() in normalized_name:
             return rank
@@ -333,10 +345,20 @@ def preferred_label_key(name: str) -> str:
 def is_vanilla_artist(artist: str) -> bool:
     """Reject versus/mashup source lists from otherwise preferred versions."""
     artist_tokens = normalized_match_tokens(artist, ignore_stopwords=False)
+    feature_index = next(
+        (
+            index
+            for index, token in enumerate(artist_tokens)
+            if token in {"feat", "featuring", "ft"}
+        ),
+        len(artist_tokens),
+    )
+    primary_artist_tokens = artist_tokens[:feature_index]
     return not (
         re.search(r"(?<!\w)vs\.?(?!\w)", artist, flags=re.IGNORECASE)
         or (artist_tokens and artist_tokens[0] in {"acca", "acapella", "inst", "instrumental"})
-        or len(artist_tokens) > 5
+        or not primary_artist_tokens
+        or len(primary_artist_tokens) > 5
     )
 
 
@@ -357,6 +379,25 @@ def is_tmu_named_version(name: str) -> bool:
     except ValueError:
         return False
     return any(token in NON_VANILLA_WORDS for token in tokens[tmu_index + 1 :])
+
+
+def preferred_edit_rank(name: str) -> int | None:
+    """Promote preferred-source edits, but not remixes or contextual copy tags."""
+    artist, title = artist_and_title(clean_catalog_name(name))
+    if not artist or not is_vanilla_artist(artist):
+        return None
+    title_tokens = normalized_match_tokens(title, ignore_stopwords=False)
+    version_words = {token for token in title_tokens if token in NON_VANILLA_WORDS}
+    if "edit" not in version_words or version_words - {"edit"}:
+        return None
+    segments = [match.group(0) for match in PARENTHETICAL.finditer(title)]
+    segments.append(PARENTHETICAL.sub(" ", title))
+    for segment in segments:
+        segment_tokens = normalized_match_tokens(segment, ignore_stopwords=False)
+        rank = preferred_term_rank(segment)
+        if rank is not None and "edit" in segment_tokens:
+            return rank
+    return None
 
 
 def is_vanilla_version(name: str) -> bool:
@@ -405,7 +446,10 @@ def priority_rank(name: str) -> int:
         preferred_rank = preferred_term_rank(name)
         if preferred_rank is not None:
             return preferred_rank
-    elif is_tmu_named_version(name):
+    preferred_edit = preferred_edit_rank(name)
+    if preferred_edit is not None:
+        return preferred_edit
+    if not vanilla and is_tmu_named_version(name):
         return 0
     _artist, title = artist_and_title(name)
     if vanilla and is_labeled_vanilla_version(name):
@@ -432,6 +476,12 @@ def bare_intro_rank(title: str) -> int:
                 return 1
             break
     return 0
+
+
+def artist_group_key(name: str) -> str:
+    """Normalize the complete artist credit for stable adjacent grouping."""
+    artist, _title = artist_and_title(clean_catalog_name(name))
+    return " ".join(normalized_match_tokens(artist, ignore_stopwords=False))
 
 
 def version_family_key(name: str) -> str:
@@ -475,23 +525,20 @@ def sort_results(results: list[dict[str, object]]) -> None:
     artist_groups: dict[str, int] = {}
     for item in results:
         name = str(item["name"])
-        if priority_rank(name) != INTRO_PRIORITY_RANK:
-            continue
-        artist, _title = artist_and_title(name)
-        artist_key = " ".join(artist.casefold().split())
+        artist_key = artist_group_key(name)
         if artist_key not in artist_groups:
             artist_groups[artist_key] = len(artist_groups)
 
-    def sort_key(item: dict[str, object]) -> tuple[int, str, int]:
+    def sort_key(item: dict[str, object]) -> tuple[int, int, str]:
         name = str(item["name"])
         rank = priority_rank(name)
+        artist_order = artist_groups[artist_group_key(name)]
         if rank < INTRO_PRIORITY_RANK:
-            return rank, preferred_label_key(name), 0
+            return rank, artist_order, preferred_label_key(name)
         if rank != INTRO_PRIORITY_RANK:
-            return rank, "", 0
-        artist, title = artist_and_title(name)
-        artist_key = " ".join(artist.casefold().split())
-        return rank, str(bare_intro_rank(title)), artist_groups[artist_key]
+            return rank, 0, ""
+        _artist, title = artist_and_title(name)
+        return rank, bare_intro_rank(title), f"{artist_order:08d}"
 
     results.sort(key=sort_key)
 
@@ -508,7 +555,10 @@ def sort_results(results: list[dict[str, object]]) -> None:
         # Named edits/remixes may span delivery labels, but plain versions are
         # kept in separate rank-scoped families.
         if rank < INTRO_PRIORITY_RANK:
-            key = f"preferred-label:{rank}:{preferred_label_key(name)}"
+            key = (
+                f"preferred-label:{rank}:{artist_group_key(name)}:"
+                f"{preferred_label_key(name)}"
+            )
         elif not key.startswith("version:"):
             key = f"rank:{rank}:{key}"
         if key not in families:

@@ -15,6 +15,7 @@ from djmetasearch.results import (
     parse_search_payload,
     parsed_size_bytes,
     preferred_label_key,
+    preferred_term_rank,
     priority_rank,
     result_meets_minimum_size,
     safe_preview_url,
@@ -281,7 +282,7 @@ def test_allows_only_public_crate_search_media_actions() -> None:
     assert safe_preview_url("https://pod.djpanaflex.com/crate-search/?action=stream") == ""
 
 
-def test_priority_terms_promote_only_vanilla_results_in_configured_order() -> None:
+def test_priority_terms_promote_vanilla_and_edit_results_in_configured_order() -> None:
     names = [
         "Ordinary Result",
         "Song - nick bike edit 1",
@@ -309,6 +310,8 @@ def test_priority_terms_promote_only_vanilla_results_in_configured_order() -> No
     assert [item["name"] for item in model["results"]] == [
         "Song - TMU Intro",
         "Song - TMU Throwback",
+        "Song - nick bike edit 1",
+        "Song - Nick Bike Edit 2",
         "Song - Johnny Flores",
         "Song - Isaac Jordan",
         "Song - DJ Ugeezy",
@@ -320,14 +323,46 @@ def test_priority_terms_promote_only_vanilla_results_in_configured_order() -> No
         "Song - Dirty Intro 2",
         "Song - CK Intro",
         "Ordinary Result",
-        "Song - nick bike edit 1",
         "Song - MMP Remix",
-        "Song - Nick Bike Edit 2",
         "Another Ordinary Result",
     ]
 
 
-def test_ck_promotes_vanilla_only_and_named_edit_copies_stay_together() -> None:
+def test_dj_rukus_and_djcity_are_preferred_vanilla_labels() -> None:
+    names = [
+        "Artist - Song (Other Remix)",
+        "Artist - Song",
+        "Artist - Song (djcity Intro)",
+        "Artist - Song (DJ Rukus Intro)",
+        "Artist - Song (DJ Rukus Remix)",
+    ]
+    items = [
+        {"name": name, "filename": f"{index}.mp3", "size": "5 MB"}
+        for index, name in enumerate(names)
+    ]
+
+    sort_results(items)
+
+    assert [item["name"] for item in items[:3]] == [names[3], names[2], names[1]]
+    assert priority_rank(names[3]) < priority_rank(names[1])
+    assert priority_rank(names[2]) < priority_rank(names[1])
+    assert priority_rank(names[4]) > priority_rank(names[1])
+
+
+def test_hh_versions_are_promoted_only_as_a_standalone_label() -> None:
+    hh_intro = "Artist - Song (HH Intro) (Clean)"
+    hh_edit = "Artist - Song (HH Edit) (Dirty)"
+    vanilla = "Artist - Song (Clean)"
+    hh_remix = "Artist - Song (HH Remix) (Clean)"
+    embedded = "Artist - Song (Shhh Edit) (Clean)"
+
+    assert priority_rank(hh_intro) < priority_rank(vanilla)
+    assert priority_rank(hh_edit) < priority_rank(vanilla)
+    assert priority_rank(hh_remix) > priority_rank(vanilla)
+    assert preferred_term_rank(embedded) is None
+
+
+def test_preferred_edit_is_promoted_but_contextual_copy_tag_stays_with_named_edit() -> None:
     names = [
         "Artist - Song (Sickmix Intro)",
         "Artist - Song (CKOne Edit)",
@@ -344,9 +379,25 @@ def test_ck_promotes_vanilla_only_and_named_edit_copies_stay_together() -> None:
     )
     model = parse_search_payload({"filescount": len(names), "html": html})
     ordered = [item["name"] for item in model["results"]]
-    assert ordered == [names[3], names[7], names[4], names[0], names[1], names[2], names[5], names[6]]
+    assert ordered == [names[3], names[2], names[7], names[4], names[0], names[1], names[5], names[6]]
     assert ordered.index(names[3]) < ordered.index(names[5])
     assert abs(ordered.index(names[5]) - ordered.index(names[6])) == 1
+
+
+def test_dj_rukus_intro_edit_is_promoted_without_promoting_remixes() -> None:
+    rukus_edit = "Nipsey Hussle Ft. Lloyd - Feelin' Myself (Dj Rukus Intro Edit) (Clean)"
+    multiple_features = (
+        "Nipsey Hussle Ft. Cobby Supreme & Dom Kennedy - "
+        "Checc Me Out (Dj Rukus Intro Edit) (Clean) 134"
+    )
+    vanilla = "Nipsey Hussle - Feelin Myself (Clean)"
+    rukus_remix = "Nipsey Hussle - Feelin Myself (DJ Rukus Remix) (Clean)"
+    contextual = "Nipsey Hussle - Feelin Myself (Smassh Edit) (DJ Rukus Intro)"
+
+    assert priority_rank(rukus_edit) < priority_rank(vanilla)
+    assert priority_rank(multiple_features) < priority_rank(vanilla)
+    assert priority_rank(rukus_remix) > priority_rank(vanilla)
+    assert priority_rank(contextual) > priority_rank(vanilla)
 
 
 def test_intro_priority_groups_first_hyphen_artists_with_bare_versions_first() -> None:
@@ -624,6 +675,23 @@ def test_promoted_results_group_by_core_label_ignoring_delivery_suffix() -> None
         names[3],
         names[0],
     ]
+
+
+def test_promoted_results_group_matching_artist_portions_before_version_labels() -> None:
+    names = [
+        "Yo Gotti Ft Young Jeezy, Yg - Act Right (Hh Clean Mixshow)",
+        "Yo Gotti - Act Right (Hh Clean Mixshow)",
+        "Yo Gotti Ft. Young Jeezy, YG - Act Right (HH Dirty Mixshow)",
+        "Yo Gotti - Act Right (Hh Dirty Mixshow)",
+    ]
+    items = [
+        {"name": name, "filename": f"{index}.mp3", "size": "5 MB"}
+        for index, name in enumerate(names)
+    ]
+
+    sort_results(items)
+
+    assert [item["name"] for item in items] == [names[0], names[2], names[1], names[3]]
 
 
 def test_intro_outro_delivery_labels_precede_named_edits_and_remixes() -> None:

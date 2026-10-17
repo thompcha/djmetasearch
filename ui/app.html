@@ -311,7 +311,7 @@
         <button id="clear-modifier" class="variant" type="button">Clear</button>
       </div>
       <div class="result-filter-row">
-        <input id="result-filter" type="search" autocomplete="off" spellcheck="false" placeholder='Filter loaded results… use "quotes" for a phrase' aria-label="Filter loaded results">
+        <input id="result-filter" type="search" autocomplete="off" spellcheck="false" placeholder='Filter… "phrase" -exclude' aria-label="Filter loaded results">
         <button id="clear-filter" class="variant" type="button" disabled>Clear filter</button>
       </div>
     </section>
@@ -340,6 +340,7 @@
         searchGeneration: 0,
         djpoolRequests: new Map(),
         rvremixRequests: new Map(),
+        rvremixSizes: new Map(),
         crateRequests: new Map(),
         crateResolveRequests: new Map(),
         djpoolQueries: new Map(),
@@ -361,6 +362,10 @@
         activeMergedModel: null,
         resultFilter: "",
         renderRevision: 0,
+        downloadPointerActive: false,
+        deferredResultsRender: false,
+        pendingResultDownloads: new Map(),
+        downloadRequestItems: new Map(),
         activePreviewRequest: null,
         activePreviewIdentity: "",
         previewGeneration: 0,
@@ -433,18 +438,30 @@
       }
 
       function parsedFilterTerms(value) {
-        const phrases = [];
-        const unquoted = String(value || "").replace(/"([^"]*)"/g, (_match, phrase) => {
-          const normalizedPhrase = normalizedFilterTokens(phrase).join(" ");
-          if (normalizedPhrase) phrases.push(normalizedPhrase);
-          return " ";
-        });
-        return { phrases, tokens: normalizedFilterTokens(unquoted) };
+        const terms = {
+          includeTokens: [],
+          excludeTokens: [],
+          includePhrases: [],
+          excludePhrases: []
+        };
+        const matcher = /(-?)"([^"]*)"|(-?)([^\s"]+)/g;
+        for (const match of String(value || "").matchAll(matcher)) {
+          const quoted = match[2] !== undefined;
+          const excluded = (quoted ? match[1] : match[3]) === "-";
+          const normalized = normalizedFilterTokens(quoted ? match[2] : match[4]);
+          if (!normalized.length) continue;
+          if (quoted) {
+            terms[excluded ? "excludePhrases" : "includePhrases"].push(normalized.join(" "));
+          } else {
+            terms[excluded ? "excludeTokens" : "includeTokens"].push(...normalized);
+          }
+        }
+        return terms;
       }
 
       function filterLoadedResults(items) {
         const required = parsedFilterTerms(state.resultFilter);
-        if (!required.tokens.length && !required.phrases.length) return items;
+        if (!Object.values(required).some(terms => terms.length)) return items;
         return items.filter(item => {
           const searchableFields = [
             item.display_name,
@@ -458,13 +475,14 @@
           ].filter(value => value !== null && value !== undefined).map(String);
           const availableTokens = normalizedFilterTokens(searchableFields.join(" "));
           const availablePhrases = searchableFields.map(field => normalizedFilterTokens(field).join(" "));
-          const tokensMatch = required.tokens.every(
-            token => availableTokens.some(candidate => candidate.includes(token))
+          const tokenMatches = token => availableTokens.some(candidate => candidate.includes(token));
+          const phraseMatches = phrase => availablePhrases.some(
+            field => ` ${field} `.includes(` ${phrase} `)
           );
-          const phrasesMatch = required.phrases.every(
-            phrase => availablePhrases.some(field => ` ${field} `.includes(` ${phrase} `))
-          );
-          return tokensMatch && phrasesMatch;
+          return required.includeTokens.every(tokenMatches) &&
+            required.includePhrases.every(phraseMatches) &&
+            !required.excludeTokens.some(tokenMatches) &&
+            !required.excludePhrases.some(phraseMatches);
         });
       }
 
@@ -728,13 +746,21 @@
           actions.append(bpm, size);
           if (item.download_url || canResolve) {
             const download = document.createElement("button");
+            const downloadIdentity = previewIdentity(item);
             download.className = "action download";
             download.type = "button";
             download.textContent = "Download";
+            download.dataset.downloadIdentity = downloadIdentity;
+            if (state.pendingResultDownloads.has(downloadIdentity)) {
+              download.setAttribute("aria-disabled", "true");
+              const pendingRequestId = state.pendingResultDownloads.get(downloadIdentity);
+              if (pendingRequestId) download.dataset.downloadRequestId = pendingRequestId;
+            }
             download.addEventListener("click", async event => {
               event.preventDefault();
               event.stopPropagation();
-              if (download.getAttribute("aria-disabled") === "true") return;
+              if (state.pendingResultDownloads.has(downloadIdentity)) return;
+              state.pendingResultDownloads.set(downloadIdentity, "");
               download.setAttribute("aria-disabled", "true");
               setStatus(`Preparing ${item.filename} from ${item.provider}…`);
               try {
@@ -745,10 +771,21 @@
                   mime_type: downloadable.mime_type || "audio/mpeg",
                   url: downloadable.download_url
                 }));
-                download.dataset.downloadRequestId = String(requestId || "");
+                const normalizedRequestId = String(requestId || "");
+                state.pendingResultDownloads.set(downloadIdentity, normalizedRequestId);
+                if (normalizedRequestId) state.downloadRequestItems.set(normalizedRequestId, downloadIdentity);
+                document.querySelectorAll('.result .download').forEach(button => {
+                  if (button.dataset.downloadIdentity === downloadIdentity) {
+                    button.dataset.downloadRequestId = normalizedRequestId;
+                  }
+                });
               } catch (error) {
-                download.removeAttribute("aria-disabled");
-                delete download.dataset.downloadRequestId;
+                state.pendingResultDownloads.delete(downloadIdentity);
+                document.querySelectorAll('.result .download').forEach(button => {
+                  if (button.dataset.downloadIdentity !== downloadIdentity) return;
+                  button.removeAttribute("aria-disabled");
+                  delete button.dataset.downloadRequestId;
+                });
                 setStatus(`Could not start ${item.provider} download: ${error.message}`, true);
               }
             });
@@ -889,12 +926,27 @@
       async function renderActiveResults() {
         const generation = state.searchGeneration;
         const revision = ++state.renderRevision;
+        for (const item of state.activeRVModel?.results || []) {
+          const size = state.rvremixSizes.get(item.id);
+          if (size) {
+            item.size_bytes = size;
+            item.size = `${(size / 1024 ** 2).toFixed(1)} MB`;
+          }
+        }
+        if (window.requestRVRemixSizes) {
+          window.requestRVRemixSizes(JSON.stringify(state.activeRVModel?.results || [])).catch(() => {});
+        }
         const models = [state.activeDJPoolModel, state.activeRVModel, state.activeCrateModel].filter(Boolean);
         const model = models.length > 1
           ? await window.mergeResultModels(JSON.stringify({ models, later_title_term: "" }))
           : (models[0] || { count: 0, results: [] });
         if (generation !== state.searchGeneration || revision !== state.renderRevision) return;
         state.activeMergedModel = model;
+        if (state.downloadPointerActive) {
+          state.deferredResultsRender = true;
+          return;
+        }
+        state.deferredResultsRender = false;
         const rendered = render(model);
         updateActiveStatus(rendered.total, rendered.availableTotal);
       }
@@ -947,6 +999,7 @@
         state.activeModifier = modifier;
         state.activeDJPoolModel = null;
         state.activeRVModel = null;
+        if (window.requestRVRemixSizes) window.requestRVRemixSizes("[]").catch(() => {});
         state.activeCrateModel = null;
         state.activeRVFinished = false;
         state.activeCrateFinished = !state.crateEnabled;
@@ -1032,6 +1085,19 @@
         resultFilterInput.dispatchEvent(new Event("input"));
         resultFilterInput.focus();
       });
+      results.addEventListener("pointerdown", event => {
+        if (event.target.closest(".download")) state.downloadPointerActive = true;
+      });
+      const finishDownloadPointerInteraction = () => {
+        if (!state.downloadPointerActive) return;
+        window.setTimeout(() => {
+          state.downloadPointerActive = false;
+          if (state.deferredResultsRender) renderActiveResults();
+        }, 0);
+      };
+      window.addEventListener("pointerup", finishDownloadPointerInteraction);
+      window.addEventListener("pointercancel", finishDownloadPointerInteraction);
+      window.addEventListener("blur", finishDownloadPointerInteraction);
       document.querySelectorAll(".variant").forEach(button => {
         if (!button.dataset.suffix) return;
         button.addEventListener("click", () => runSearch(variantQuery(queryInput.value || state.activeQuery, button.dataset.suffix), false));
@@ -1127,6 +1193,12 @@
             renderActiveResults();
           }
         },
+        rvremixSizesUpdated(sizes) {
+          for (const [id, size] of Object.entries(sizes)) {
+            if (Number.isFinite(size) && size > 0) state.rvremixSizes.set(id, size);
+          }
+          renderActiveResults();
+        },
         rvremixSearchSucceeded(requestId, model) {
           const pending = state.rvremixRequests.get(String(requestId));
           if (!pending) return;
@@ -1195,8 +1267,12 @@
             delete playerDownload.dataset.downloadRequestId;
           }
           if (completedRequestId) {
+            const completedIdentity = state.downloadRequestItems.get(completedRequestId) || "";
+            state.downloadRequestItems.delete(completedRequestId);
+            if (completedIdentity) state.pendingResultDownloads.delete(completedIdentity);
             document.querySelectorAll('.result .download[aria-disabled="true"]').forEach(button => {
-              if (button.dataset.downloadRequestId !== completedRequestId) return;
+              if (button.dataset.downloadRequestId !== completedRequestId &&
+                  button.dataset.downloadIdentity !== completedIdentity) return;
               button.removeAttribute("aria-disabled");
               delete button.dataset.downloadRequestId;
             });

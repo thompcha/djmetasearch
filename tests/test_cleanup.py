@@ -85,6 +85,7 @@ def read_embedded_comments(path: Path) -> list[str]:
         ("A$AP ROCKY FT GUEST", "A$AP Rocky, Guest"),
         ("AKON'S CREW FT. O'NEAL", "Akon's Crew, O'Neal"),
         ("Artist Qh FT. qh Guest", "Artist QH, QH Guest"),
+        ("Yg Ft. Guest", "YG, Guest"),
         ("Artist (Se)", "Artist (SE)"),
     ],
 )
@@ -116,10 +117,13 @@ def test_artist_cleanup(source: str, expected: str) -> None:
         ("TITLE (DIRTY - DJ INTRO) 100", "Title (DJ Intro) (Dirty)"),
         ("TITLE [TMU INTRO CLEAN] 100", "Title (TMU Intro) (Clean)"),
         ("TITLE MMP INTRO - DIRTY 100", "Title (MMP Intro) (Dirty)"),
+        ("Toxic (Djcity Intro - Dirty)", "Toxic (DJcity Intro) (Dirty)"),
         ("Mixed Qh Edit 100", "Mixed QH Edit"),
         ("Mixed qh Edit 100", "Mixed QH Edit"),
         ("Mixed Hh Edit 100", "Mixed HH Edit"),
         ("Mixed hh Edit 100", "Mixed HH Edit"),
+        ("Yg Mix 100", "YG Mix"),
+        ("Young Yg 100", "Young YG"),
         ("Mixed Case (Se) Edit", "Mixed Case (SE) Edit"),
         ("TITLE (se) EDIT", "Title (SE) Edit"),
         ("TITLE (CLEAN - SHORT EDIT) 100", "Title (Short Edit) (Clean)"),
@@ -219,6 +223,23 @@ def test_missing_tags_fall_back_to_filename_parts(tmp_path: Path) -> None:
     audio = MutagenFile(result.final_path, easy=True)
     assert audio["artist"] == ["Artist, Guest"]
     assert audio["title"] == ["Title (CK Intro)"]
+
+
+@pytest.mark.parametrize("extension", [".mp3", ".m4a"])
+def test_djcity_intro_and_yg_are_normalized_in_tags_and_filename(
+    tmp_path: Path, extension: str
+) -> None:
+    source = tmp_path / f"staged{extension}"
+    make_audio(source, "Yg", "Toxic (Djcity Intro - Dirty)")
+
+    result = cleanup.process_download(source, f"raw download{extension}", tmp_path / "downloads")
+
+    assert result.final_path.name == f"YG - Toxic (DJcity Intro) (Dirty){extension}"
+    assert result.artist == "YG"
+    assert result.title == "Toxic (DJcity Intro) (Dirty)"
+    audio = MutagenFile(result.final_path, easy=True)
+    assert audio["artist"] == ["YG"]
+    assert audio["title"] == ["Toxic (DJcity Intro) (Dirty)"]
 
 
 @pytest.mark.parametrize("extension", [".mp3", ".m4a"])

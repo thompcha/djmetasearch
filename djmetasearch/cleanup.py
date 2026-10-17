@@ -14,7 +14,7 @@ from mutagen import File as MutagenFile
 
 SUPPORTED_EXTENSIONS = {".mp3", ".m4a"}
 DJPOOL_PLACEHOLDER_COMMENTS = {"djpoolrecords.com", "www.djpoolrecords.com"}
-KNOWN_ACRONYMS = ("DJ", "TMU", "CK", "MMP", "QH", "HH")
+KNOWN_ACRONYMS = ("DJ", "DJcity", "TMU", "CK", "MMP", "QH", "HH", "YG")
 FEATURE_SEPARATOR = re.compile(r"\s+\b(?:ft|feat|featuring)\.?\s+", flags=re.IGNORECASE)
 TRAILING_NUMBER = re.compile(r"^(.*\S)\s+(\d{2,3})$")
 TRAILING_CAMELOT_KEY = re.compile(r"^(.*\S)\s+((?:[1-9]|1[0-2])[AB])$", flags=re.IGNORECASE)
@@ -22,7 +22,8 @@ SYMBOL_ACRONYM = re.compile(
     r"(?:\b(?:[A-Z]\.){2,}[A-Z]?\.?\b|\b[A-Z]+\$[A-Z]+\b|\b[A-Z]{1,4}(?:/[A-Z]{1,4})+\b)"
 )
 PARENTHETICAL_SE = re.compile(r"\(\s*se\s*\)", flags=re.IGNORECASE)
-INTRO_LABEL = r"(?:(?:dj|tmu|ck|mmp)\s+)?intro"
+INTRO_ACRONYM = "|".join(re.escape(acronym) for acronym in KNOWN_ACRONYMS)
+INTRO_LABEL = rf"(?:(?:{INTRO_ACRONYM})\s+)?intro"
 INTRO_CLEAN_DIRTY = re.compile(
     rf"(?:\(\s*(?:{INTRO_LABEL}(?:\s*-\s*|\s+)(?:clean|dirty)"
     rf"|(?:clean|dirty)(?:\s*-\s*|\s+){INTRO_LABEL})\s*\)"
@@ -138,8 +139,20 @@ def remove_trailing_track_markers(value: str) -> str:
 def normalize_intro_variant(value: str) -> str:
     def replacement(match: re.Match[str]) -> str:
         variant = "Dirty" if "dirty" in match.group(0).lower() else "Clean"
-        prefix_match = re.search(rf"\b({'|'.join(KNOWN_ACRONYMS)})\s+intro\b", match.group(0), flags=re.IGNORECASE)
-        intro_label = f"{prefix_match.group(1).upper()} Intro" if prefix_match else "Intro"
+        prefix_match = re.search(
+            rf"\b({INTRO_ACRONYM})\s+intro\b",
+            match.group(0),
+            flags=re.IGNORECASE,
+        )
+        if prefix_match:
+            canonical_prefix = next(
+                acronym
+                for acronym in KNOWN_ACRONYMS
+                if acronym.casefold() == prefix_match.group(1).casefold()
+            )
+            intro_label = f"{canonical_prefix} Intro"
+        else:
+            intro_label = "Intro"
         return f"({intro_label}) ({variant})"
 
     value = INTRO_CLEAN_DIRTY.sub(replacement, value)

@@ -12,7 +12,8 @@ def test_ui_has_daily_workflow_controls() -> None:
 def test_result_filter_is_client_side_and_punctuation_insensitive() -> None:
     assert "function filterLoadedResults(items)" in UI
     assert "function parsedFilterTerms(value)" in UI
-    assert "phrases.push(normalizedPhrase)" in UI
+    assert 'terms[excluded ? "excludeTokens" : "includeTokens"]' in UI
+    assert 'terms[excluded ? "excludePhrases" : "includePhrases"]' in UI
     assert 'includes(` ${phrase} `)' in UI
     assert 'state.activeMergedModel = model' in UI
     assert 'resultFilterInput.addEventListener("input"' in UI
@@ -155,6 +156,9 @@ def test_status_is_out_of_flow_to_prevent_layout_shift() -> None:
 def test_download_completion_uses_temporary_status_toast() -> None:
     assert 'downloadFinished(message, warning, requestId = "")' in UI
     assert "button.dataset.downloadRequestId !== completedRequestId" in UI
+    assert "state.downloadPointerActive = true" in UI
+    assert "state.deferredResultsRender = true" in UI
+    assert "state.pendingResultDownloads" in UI
     assert "window.clearTimeout(window.djpoolDownloadStatusTimer)" in UI
     assert "}, 5000);" in UI
 
