@@ -866,3 +866,35 @@ def test_numeric_columns_sort_both_directions_with_blanks_last() -> None:
 
 
 BASE_PAGE = "https://djpoolrecords.com/"
+
+
+def test_jiosaavn_arrives_asynchronously_and_opens_song_link():
+    from djmetasearch.jiosaavn import parse_payload
+    song_url = "https://www.jiosaavn.com/song/example/abc"
+    model = parse_payload({"results": [{"id": "abc", "type": "song", "title": "Artist Song", "perma_url": song_url}]})
+    opened = []
+    handed_off = []
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.route(f"{APP_URL}*", lambda route: route.fulfill(status=200, content_type="text/html", body=UI))
+        page.expose_binding("requestDJPoolSearch", lambda _source, query: {"count": 0, "results": []})
+        page.expose_binding("requestRVRemixSearch", lambda _source, query: {"count": 0, "results": []})
+        page.expose_binding("requestJioSaavnSearch", lambda _source, query: "jio-123")
+        page.expose_binding("openJioSaavn", lambda _source, url: opened.append(url))
+        page.expose_binding("handoffJioSaavn", lambda _source, url: handed_off.append(url))
+        page.expose_binding("requestBootstrap", lambda _source, query: True)
+        page.expose_binding("mergeResultModels", lambda _source, raw: merge_result_models(json.loads(raw)["models"], later_title_term=""))
+        page.goto(APP_URL)
+        page.evaluate("([cache, query]) => window.djpool.start(cache, query)", [TEMPLATE, "Artist"])
+        page.wait_for_function("() => document.querySelector('#status').textContent.includes('Loading JioSaavn')")
+        page.evaluate("model => window.djpool.jiosaavnSearchSucceeded('jio-123', model)", model)
+        page.wait_for_selector(".provider.jiosaavn")
+        assert page.locator("#count").inner_text() == "1 result · 1 JioSaavn"
+        page.locator(".result-name a").click()
+        assert opened == [song_url]
+        page.locator(".orpheus-handoff").click()
+        page.wait_for_function("() => document.querySelector('#status').textContent.includes('Sent')")
+        assert handed_off == [song_url]
+        assert page.locator(".result .download").inner_text() == "Download"
+        browser.close()

@@ -1,7 +1,7 @@
 # DJ Meta Search
 
 DJ Meta Search is a macOS search window for DJPoolRecords, RVRemix, and
-DJFolders. It combines the providers, previews media, and downloads files
+DJFolders, plus JioSaavn song search. It combines the providers, previews media, and downloads files
 through the existing metadata-cleanup workflow.
 
 ## One-time installation
@@ -168,6 +168,9 @@ only from `main`; keep unfinished work on another branch.
   audio-search API.
 - Searches RVRemix audio and filters irrelevant or duplicate results locally.
   RVRemix downloads save the same audio stream used for previews.
+- Searches JioSaavn concurrently and labels its song results. Click a JioSaavn
+  song title to open it in your browser, or click **Download** to send the
+  song to your installed JioLite app for downloading with OrpheusDL.
 - Loads DJPoolRecords pages progressively while RVRemix and DJFolders run in
   the background.
 - Labels and priority-sorts merged results, previews media through a temporary

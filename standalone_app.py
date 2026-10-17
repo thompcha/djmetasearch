@@ -27,6 +27,7 @@ except ImportError as exc:  # pragma: no cover - exercised before dependencies e
 from djmetasearch.cleanup import CleanupResult, process_download, unique_destination
 from djmetasearch.cache import load_cache, make_cache, save_cache, validate_cache
 from djmetasearch.crate_search import BASE_URL as CRATE_SEARCH_URL, CrateSearchClient
+from djmetasearch.jiosaavn import JioSaavnClient, safe_song_url, handoff_to_orpheus
 from djmetasearch.query import default_query, resolve_query
 from djmetasearch.results import (
     ALLOWED_HOST,
@@ -549,12 +550,15 @@ def run() -> int:
     pending_notifications: list[dict[str, object]] = []
     pending_rvremix_searches: dict[str, Future[dict[str, object]]] = {}
     pending_crate_searches: dict[str, Future[dict[str, object]]] = {}
+    pending_jiosaavn_searches: dict[str, Future[dict[str, object]]] = {}
     pending_crate_resolves: dict[str, Future[dict[str, object]]] = {}
     media_cache: dict[str, dict[str, object]] = {}
     cached_media_by_url: dict[str, str] = {}
     cached_media_by_request: dict[str, str] = {}
     staging_dir = Path(tempfile.mkdtemp(prefix="djmetasearch_dl_"))
     preview_cache_dir = staging_dir / "previews"
+    jiosaavn = JioSaavnClient()
+    jiosaavn_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="jiosaavn-search")
     rvremix = RVRemixClient()
     rvremix_sizes = RVRemixSizeLookup()
     rvremix_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="rvremix-search")
@@ -607,6 +611,17 @@ def run() -> int:
                     rvremix.search, str(query or "")
                 )
                 return request_id
+
+            def queue_jiosaavn_search(_source: object, query: str) -> str:
+                request_id = uuid.uuid4().hex
+                pending_jiosaavn_searches[request_id] = jiosaavn_executor.submit(jiosaavn.search, str(query or ""))
+                return request_id
+
+            def open_jiosaavn(_source: object, url: str) -> None:
+                url = safe_song_url(url)
+                if not url:
+                    raise ValueError("Invalid JioSaavn song URL.")
+                subprocess.Popen(["open", url])
 
             def queue_crate_search(_source: object, query: str) -> str:
                 if crate_search is None:
@@ -687,6 +702,9 @@ def run() -> int:
                 "requestRVRemixSizes",
                 lambda _source, raw: rvremix_sizes.set_results(json.loads(raw)),
             )
+            app_page.expose_binding("requestJioSaavnSearch", queue_jiosaavn_search)
+            app_page.expose_binding("openJioSaavn", open_jiosaavn)
+            app_page.expose_binding("handoffJioSaavn", lambda _source, url: handoff_to_orpheus(url))
             app_page.expose_binding("requestCrateSearch", queue_crate_search)
             app_page.expose_binding("requestCrateResolve", queue_crate_resolve)
             app_page.expose_binding("mergeResultModels", merge_models)
@@ -815,6 +833,7 @@ def run() -> int:
                 if closed_during_callback:
                     break
                 for jobs, succeeded, failed in (
+                    (pending_jiosaavn_searches, "jiosaavnSearchSucceeded", "jiosaavnSearchFailed"),
                     (pending_crate_searches, "crateSearchSucceeded", "crateSearchFailed"),
                     (pending_crate_resolves, "crateResolveSucceeded", "crateResolveFailed"),
                 ):
@@ -980,6 +999,7 @@ def run() -> int:
                 pass
             browser.close()
     finally:
+        jiosaavn_executor.shutdown(wait=False, cancel_futures=True)
         rvremix_sizes.close()
         rvremix_executor.shutdown(wait=False, cancel_futures=True)
         crate_executor.shutdown(wait=False, cancel_futures=True)

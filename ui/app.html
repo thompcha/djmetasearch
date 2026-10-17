@@ -175,6 +175,7 @@
       letter-spacing: .06em;
       text-transform: uppercase;
     }
+    .provider.jiosaavn { border-color: #287b70; color: #61dcc8; }
     .provider.rvremix { border-color: #81421f; color: #ffad7b; }
     .provider.djfolders { border-color: #286c72; color: #74d8df; }
     .column-heads, .actions {
@@ -288,7 +289,7 @@
   <main class="app">
     <header class="masthead">
       <div>
-        <p class="eyebrow">DJPoolRecords + RVRemix + DJFolders</p>
+        <p class="eyebrow">DJPoolRecords + RVRemix + DJFolders + JioSaavn</p>
         <h1>DJ MetaSearch</h1>
       </div>
       <div id="count" class="count" aria-live="polite"></div>
@@ -339,6 +340,11 @@
         activeQuery: "",
         searchGeneration: 0,
         djpoolRequests: new Map(),
+        jiosaavnRequests: new Map(),
+        jiosaavnQueries: new Map(),
+        activeJioModel: null,
+        activeJioFinished: true,
+        activeJioError: "",
         rvremixRequests: new Map(),
         rvremixSizes: new Map(),
         crateRequests: new Map(),
@@ -621,7 +627,7 @@
           counts[provider] = (counts[provider] || 0) + 1;
           return counts;
         }, {});
-        const breakdown = ["DJPoolRecords", "RVRemix", "DJFolders"]
+        const breakdown = ["DJPoolRecords", "RVRemix", "DJFolders", "JioSaavn"]
           .filter(provider => providerCounts[provider])
           .map(provider => `${providerCounts[provider]} ${provider}`)
           .join(" · ");
@@ -698,10 +704,22 @@
           const name = document.createElement("div");
           name.className = "result-name";
           name.textContent = item.display_name || item.name;
+          if (item.provider === "JioSaavn" && item.external_url) {
+            const link = document.createElement("a");
+            link.textContent = name.textContent;
+            link.href = item.external_url;
+            link.title = "Open on JioSaavn";
+            link.addEventListener("click", event => {
+              event.preventDefault();
+              window.openJioSaavn(item.external_url).catch(error => setStatus(error.message, true));
+            });
+            name.replaceChildren(link);
+          }
           details.append(name);
           const provider = document.createElement("span");
           const providerClass = item.provider === "RVRemix"
             ? "rvremix"
+            : item.provider === "JioSaavn" ? "jiosaavn"
             : item.provider === "DJFolders" ? "djfolders" : "djpoolrecords";
           provider.className = `provider ${providerClass}`;
           provider.textContent = item.provider || "Unknown";
@@ -790,6 +808,27 @@
               }
             });
             actions.appendChild(download);
+          } else if (item.provider === "JioSaavn" && item.external_url) {
+            const handoff = document.createElement("button");
+            handoff.className = "action download orpheus-handoff";
+            handoff.type = "button";
+            handoff.textContent = "Download";
+            handoff.title = "Send to OrpheusDL via JioLite";
+            handoff.addEventListener("click", async event => {
+              event.preventDefault();
+              event.stopPropagation();
+              if (handoff.disabled) return;
+              handoff.disabled = true;
+              try {
+                await window.handoffJioSaavn(item.external_url);
+                setStatus(`Sent ${item.name} to OrpheusDL. JioLite will report download progress.`);
+              } catch (error) {
+                setStatus(`Could not hand off to OrpheusDL: ${error.message}`, true);
+              } finally {
+                handoff.disabled = false;
+              }
+            });
+            actions.appendChild(handoff);
           } else {
             actions.appendChild(document.createElement("span"));
           }
@@ -847,6 +886,22 @@
         })();
         state.rvremixQueries.set(key, pending);
         pending.catch(() => state.rvremixQueries.delete(key));
+        return pending;
+      }
+
+      async function fetchJioSaavnModel(query) {
+        if (!window.requestJioSaavnSearch) return { count: 0, results: [] };
+        const key = queryKey(query);
+        if (state.jiosaavnQueries.has(key)) return state.jiosaavnQueries.get(key);
+        const pending = (async () => {
+          const request = await window.requestJioSaavnSearch(query);
+          if (request && typeof request === "object") return request;
+          return new Promise((resolve, reject) => {
+            state.jiosaavnRequests.set(String(request), { resolve, reject });
+          });
+        })();
+        state.jiosaavnQueries.set(key, pending);
+        pending.catch(() => state.jiosaavnQueries.delete(key));
         return pending;
       }
 
@@ -916,6 +971,10 @@
               ? "DJPoolRecords results ready; loading RVRemix…"
               : "No DJPoolRecords matches; loading RVRemix…"
           );
+        } else if (!state.activeJioFinished) {
+          setStatus("Loading JioSaavn…");
+        } else if (state.activeJioError) {
+          setStatus(`JioSaavn unavailable: ${state.activeJioError}`, true);
         } else if (state.resultFilter.trim() && availableTotal && !total) {
           setStatus(`No loaded results match “${state.resultFilter.trim()}”.`);
         } else {
@@ -936,7 +995,7 @@
         if (window.requestRVRemixSizes) {
           window.requestRVRemixSizes(JSON.stringify(state.activeRVModel?.results || [])).catch(() => {});
         }
-        const models = [state.activeDJPoolModel, state.activeRVModel, state.activeCrateModel].filter(Boolean);
+        const models = [state.activeDJPoolModel, state.activeRVModel, state.activeCrateModel, state.activeJioModel].filter(Boolean);
         const model = models.length > 1
           ? await window.mergeResultModels(JSON.stringify({ models, later_title_term: "" }))
           : (models[0] || { count: 0, results: [] });
@@ -998,6 +1057,9 @@
         state.activeDJPoolKeys = (modifier && baseQuery ? [clean, baseQuery] : [clean]).map(queryKey);
         state.activeModifier = modifier;
         state.activeDJPoolModel = null;
+        state.activeJioModel = null;
+        state.activeJioFinished = !window.requestJioSaavnSearch;
+        state.activeJioError = "";
         state.activeRVModel = null;
         if (window.requestRVRemixSizes) window.requestRVRemixSizes("[]").catch(() => {});
         state.activeCrateModel = null;
@@ -1010,6 +1072,8 @@
 
         // Start the slower provider immediately, but settle it so an early
         // DJPoolRecords authentication refresh cannot cause an unhandled rejection.
+        const jiosaavnTask = fetchJioSaavnModel(modifier && baseQuery ? baseQuery : clean)
+          .then(model => ({ model }), error => ({ error }));
         const rvremixTask = fetchProviderModel(
           fetchRVRemixModel, clean, modifier, baseQuery
         ).then(model => ({ model }), error => ({ error }));
@@ -1027,15 +1091,17 @@
             await requestRefresh(clean, "The saved connection expired. Refreshing it in the background…");
             return;
           }
-          const [rvremix, crate] = await Promise.all([rvremixTask, crateTask]);
+          const [rvremix, crate, jio] = await Promise.all([rvremixTask, crateTask, jiosaavnTask]);
           if (generation !== state.searchGeneration) return;
           state.refreshing = false;
           setBusy(false);
           state.activeRVFinished = true;
           state.activeCrateFinished = true;
+          state.activeJioModel = jio.model || null;
+          state.activeJioFinished = true;
           state.activeRVModel = rvremix.model || null;
           state.activeCrateModel = crate.model || null;
-          if (state.activeRVModel?.results?.length || state.activeCrateModel?.results?.length) {
+          if (state.activeRVModel?.results?.length || state.activeCrateModel?.results?.length || state.activeJioModel?.results?.length) {
             await renderActiveResults();
             setStatus(`DJPoolRecords unavailable; showing other provider results. ${error.message}`, true);
           } else {
@@ -1057,6 +1123,10 @@
             state.activeRVFinished = true;
             state.activeRVError = result.error?.message || "";
             state.activeRVModel = result.model || null;
+          } else if (provider === "JioSaavn") {
+            state.activeJioFinished = true;
+            state.activeJioError = result.error?.message || "";
+            state.activeJioModel = result.model || null;
           } else {
             state.activeCrateFinished = true;
             state.activeCrateError = result.error?.message || "";
@@ -1064,7 +1134,7 @@
           }
           await renderActiveResults();
         };
-        const settlements = [settleProvider(rvremixTask, "RVRemix")];
+        const settlements = [settleProvider(rvremixTask, "RVRemix"), settleProvider(jiosaavnTask, "JioSaavn")];
         if (state.crateEnabled) settlements.push(settleProvider(crateTask, "DJFolders"));
         await Promise.all(settlements);
       }
@@ -1192,6 +1262,18 @@
             state.activeDJPoolError = `Could not load more DJPoolRecords results: ${message}`;
             renderActiveResults();
           }
+        },
+        jiosaavnSearchSucceeded(requestId, model) {
+          const pending = state.jiosaavnRequests.get(String(requestId));
+          if (!pending) return;
+          state.jiosaavnRequests.delete(String(requestId));
+          pending.resolve(model);
+        },
+        jiosaavnSearchFailed(requestId, message) {
+          const pending = state.jiosaavnRequests.get(String(requestId));
+          if (!pending) return;
+          state.jiosaavnRequests.delete(String(requestId));
+          pending.reject(new Error(message || "JioSaavn search failed."));
         },
         rvremixSizesUpdated(sizes) {
           for (const [id, size] of Object.entries(sizes)) {
